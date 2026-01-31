@@ -22,7 +22,7 @@ The code for the pre-trained tokenizer is currently only available by request fr
 2. Place their code in `brainstorm/neuro_tokenizers/biocodec` and the checkpoint in `brainstorm/neuro_tokenizers/biocodec_ckpt.pt`
 
 ### MEG-XL Setup
-3. (Optional) create and activate a new virtual environment with python>=3.12, e.g. `conda create -n megxlenv python=3.12.12 && conda activate megxlenv`
+3. (Optional) create and activate a new virtual environment with python >= 3.12, e.g. `conda create -n megxlenv python=3.12.12 && conda activate megxlenv`
 4. `pip install -r requirements.txt`
 5. (Optional) download pre-trained MEG-XL weights from [HuggingFace](https://huggingface.co/pnpl/MEG-XL)
 6. Follow the specific notes below depending on how you wish to use MEG-XL
