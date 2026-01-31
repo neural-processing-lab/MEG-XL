@@ -1,6 +1,6 @@
-# MEG-XL: Data-Efficient Brain-to-Text via Long-Context Pre-Training
+# MEG-<ins>XL</ins>: Data-Efficient Brain-to-Text via Long-Context Pre-Training
 
-This repository contains the code for "MEG-XL: Data-Efficient Brain-to-Text via Long-Context Pre-Training."
+This repository contains the code for the paper "MEG-XL: Data-Efficient Brain-to-Text via Long-Context Pre-Training."
 
 Paper: [arXiv]()
 Model weights: [HuggingFace](https://huggingface.co/pnpl/MEG-XL)
