@@ -11,7 +11,7 @@ Coming soon.
 ```
 
 ## Requirements
-- python >= 3.12.12
+- python >= 3.12
 - For python packages, see `requirements.txt`
 
 ## Setup
