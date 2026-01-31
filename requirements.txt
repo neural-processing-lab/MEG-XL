@@ -1,0 +1,26 @@
+# Core Deep Learning
+torch>=2.0.0
+pytorch-lightning>=2.0.0
+
+# Configuration
+hydra-core>=1.3.0
+omegaconf>=2.3.0
+
+# Data Processing
+numpy>=1.24.0
+h5py>=3.8.0
+mne>=1.4.0
+pandas>=3.0.0
+
+# Machine Learning Utilities
+scikit-learn>=1.2.0
+
+# Logging & Visualization
+wandb>=0.15.0
+tqdm>=4.65.0
+
+# Tensor Operations
+einops>=0.6.0
+
+# Target embedding extraction
+transformers>=5.0.0

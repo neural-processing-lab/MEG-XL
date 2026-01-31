@@ -1,0 +1,146 @@
+# CrissCross Word Classification Evaluation Configuration - Gwilliams Dataset (LINEAR PROBE)
+#
+# This config is for the linear probe variant:
+# - CrissCross backbone is FROZEN (no gradients)
+# - Only a single linear layer is trained
+
+# Model checkpoints
+model:
+  # Path to pretrained CrissCrossTransformer checkpoint (backbone will be frozen)
+  criss_cross_checkpoint: "./checkpoints/criss-cross-multi-dataset-pretrain-50Hz/c5z56xy8/last.ckpt"
+
+  # Path to BioCodec tokenizer checkpoint
+  tokenizer_checkpoint: "./brainstorm/neuro_tokenizers/biocodec_ckpt.pt"
+
+  # Linear probe configuration (single linear layer)
+  linear_probe:
+    embed_dim: 1024  # T5-large embedding dimension
+
+# Data settings
+data:
+  # Dataset type: "armeni" (default), "gwilliams", or "libribrain"
+  dataset_type: "gwilliams"
+
+  # Dataset root directory
+  root: "/path/to/gwilliams2022"
+  cache_dir: "./data/cache"
+
+  # Max channel dimension (KIT/Ricoh system has 208 MEG channels)
+  max_channel_dim: 208
+
+  # Subjects to include
+  subjects:
+    - "sub-01"
+    - "sub-02"
+    - "sub-03"
+    - "sub-04"
+    - "sub-05"
+    - "sub-06"
+    - "sub-07"
+    - "sub-08"
+    - "sub-09"
+    - "sub-10"
+    - "sub-11"
+    - "sub-12"
+    - "sub-13"
+    - "sub-14"
+    - "sub-15"
+    - "sub-16"
+    - "sub-17"
+    - "sub-18"
+    - "sub-19"
+    - "sub-20"
+    - "sub-21"
+    - "sub-22"
+    - "sub-23"
+    - "sub-24"
+    - "sub-25"
+    - "sub-26"
+    - "sub-27"
+
+  # Split mode: hashed sentence-based splitting
+  use_hashed_split: true
+
+  # Hashed split parameters (used when use_hashed_split=true)
+  split_ratios: [0.8, 0.1, 0.1]  # train, val, test
+  all_sessions:
+    - "ses-0"
+    - "ses-1"
+
+  # Session-based temporal split (used when use_hashed_split=false)
+  train_pct: 0.25
+  train_sessions:
+    - "ses-0"
+
+  val_sessions:
+    - "ses-1"
+
+  test_sessions:
+    - "ses-1"
+
+  # Tasks (Gwilliams uses "0", "1", "2", "3")
+  tasks:
+    - "0"
+    - "1"
+    - "2"
+    - "3"
+
+  # Preprocessing parameters (must match CrissCross pretraining)
+  l_freq: 0.1
+  h_freq: 40.0
+  target_sfreq: 50.0
+
+  # Word window parameters
+  segment_length: 150.0
+  subsegment_duration: 3.0
+  words_per_segment: 50
+  window_onset_offset: -0.5
+
+# T5 embedding settings
+t5:
+  model_name: "t5-large"
+  layer: 12  # Which layer to extract embeddings from
+  cache_dir: "./embeddings_cache"
+
+# Training settings
+training:
+  batch_size: 1
+  num_epochs: 50
+
+  # Learning rate for linear probe only (backbone is frozen)
+  probe_lr: 1.0e-3
+
+  # Regularization
+  weight_decay: 1.0e-4
+  gradient_clip_val: 1.0
+
+  # Early stopping
+  patience: 10
+  min_delta: 0.001
+
+  # DataLoader settings
+  num_workers: 6
+  pin_memory: true
+
+# Loss settings (SigLIP)
+loss:
+  norm_kind: "xy"
+  temperature: true
+  bias: true
+  reduction: "sum"
+
+# Evaluation settings
+evaluation:
+  retrieval_set_sizes: [50, 250]
+  k: 10
+
+# Logging settings
+logging:
+  wandb_project: "brainstorm-eval"
+  experiment_name: "criss-cross-word-classification-linear-probe-gwilliams"
+  log_every_n_steps: 10
+  save_dir: "./logs/word_classification_linear_probe_gwilliams"
+
+# System settings
+device: "cuda"
+seed: 42

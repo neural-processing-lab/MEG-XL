@@ -1,0 +1,120 @@
+# Multi-Dataset Criss-Cross Transformer Training Configuration
+# Supports: Schoffelen, Gwilliams, CamCAN, LibriBrain, and Armeni datasets
+
+# Multi-dataset configuration
+datasets_config:
+
+  - type: "smn4lang"
+    data_root: "/path/to/ds004078"
+    subjects: null  # Use all subjects (sub-01 through sub-12)
+    runs: null  # Use all runs (run-1 through run-60)
+    tasks: ["RDR"]  # Reading task
+    val_runs: ["run-60", "run-59", "run-58", "run-57", "run-56"]  # Use last run of each subject for validation
+
+  - type: "schoffelen"
+    data_root: "/path/to/schoffelen2019"
+    subjects: null  # Use all subjects
+    tasks: ["auditory"]
+    val_subjects: ["sub-A2120", "sub-A2121", "sub-A2122"]  # Subjects to use for validation
+
+  - type: "camcan"
+    data_root: "/path/to/shafto2014/cc700/meg/pipeline/release005/BIDSsep"
+    subjects: null  # Use all subjects
+    tasks: ["rest", "smt"]  # Both resting-state and sensorimotor tasks
+    val_subjects: ["sub-CC110033", "sub-CC120065", "sub-CC110101"]  # Example validation subjects
+
+  # # LibriBrain dataset with session-based validation split
+  # - type: "libribrain"
+  #   data_root: "/path/to/LibriBrain"
+  #   subjects: null  # Use all subjects
+  #   sessions: null  # Discover all sessions, exclude val_session
+  #   tasks: null  # Use all Sherlock tasks
+  #   val_session: "ses-2"  # Session to use for validation
+  #   validation_only: true
+
+  - type: "armeni"
+    data_root: "/path/to/armeni2022"
+    subjects: null # Use all subjects
+    tasks: ["compr"]
+    val_session: "ses-010"  # Session to use for validation
+    validation_only: true  # Optional: set to true to use only for validation (default: false)
+
+  - type: "gwilliams"
+    data_root: "/path/to/gwilliams2022"
+    subjects: null  # Use all subjects
+    sessions: null  # Use all sessions (ses-0, ses-1 where available)
+    tasks: ["0", "1", "2", "3"]  # Use all tasks
+    val_subjects: ["sub-03", "sub-11"]  # Single-session subjects for validation
+    validation_only: true
+
+# Shared data settings
+data:
+  cache_dir: "./data/cache"
+  segment_length: 150.0  # seconds
+  debug_mode: false  # If true, uses minimal data for debugging
+
+  # Preprocessing parameters (same for all datasets)
+  l_freq: 0.1  # Low-pass filter cutoff (Hz)
+  h_freq: 40.0  # High-pass filter cutoff (Hz)
+  target_sfreq: 50.0  # Target sampling frequency (Hz)
+
+  # Recording subsampling for data ablation experiments
+  recording_subsample_prop: null  # Set to 0.0-1.0 to subsample recordings (null = use all)
+
+# Model settings
+model:
+  tokenizer_ckpt: "./brainstorm/neuro_tokenizers/biocodec_ckpt.pt"
+  latent_dim: 512
+  num_layers: 8
+  num_heads: 8
+  vocab_size: 256
+
+  # Criss-Cross specific parameters
+  mask_duration: 3.0  # Temporal mask duration in seconds
+  num_subsegments_to_mask: 20  # Number of subsegments to mask
+  sampling_rate: 50  # MEG sampling rate (Hz)
+  fourier_pos_dim: 250  # Fourier embedding dimension for sensor positions
+
+# Training settings
+training:
+  batch_size: 1
+  num_epochs: 50
+  learning_rate: 1e-4
+  warmup_steps: 250
+  gradient_clip_val: 1.0
+
+  # DataLoader settings
+  num_workers: 6
+  pin_memory: true
+  persistent_workers: true
+
+  # Sampler settings
+  use_recording_sampler: true
+  sampler_seed: 42
+
+# Logging settings
+logging:
+  wandb_project: "brainstorm"
+  wandb_entity: null  # Set to your WandB username/team
+  experiment_name: "criss-cross-multi-dataset-pretrain-50Hz"
+  log_every_n_steps: 10
+
+# Checkpoint settings
+checkpoint:
+  save_dir: "./checkpoints"
+  every_n_train_steps: 5000  # Save checkpoint every n training steps
+  save_top_k: -1  # -1 = save all checkpoints, or set to specific number to keep top k
+  save_last: true
+  resume: false  # Set to true to resume training from checkpoint
+  resume_path: null  # Path to checkpoint file (e.g., "./checkpoints/criss-cross-multi-dataset-pretrain/<run_id>/last.ckpt")
+
+# Trainer settings
+trainer:
+  accelerator: "gpu"
+  devices: 1
+  precision: "bf16-mixed"  # Use "32" for full precision, "16-mixed" for fp16
+  accumulate_grad_batches: 1
+  val_check_interval: 500  # Validate every 1000 training steps
+
+# Reproducibility
+seed: 42
