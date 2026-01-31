@@ -1,4 +1,4 @@
-# MEG-XL
+# MEG-XL: Data-Efficient Brain-to-Text via Long-Context Pre-Training
 
 This repository contains the code for "MEG-XL: Data-Efficient Brain-to-Text via Long-Context Pre-Training."
 
