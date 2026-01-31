@@ -27,7 +27,7 @@ The code for the pre-trained tokenizer is currently only available by request fr
 5. (Optional) download pre-trained MEG-XL weights from [HuggingFace](https://huggingface.co/pnpl/MEG-XL)
 6. Follow the specific notes below depending on how you wish to use MEG-XL
 
-## Fine-tuning MEG-XL
+## Fine-tuning MEG-XL for Brain-to-Text
 `python -m brainstorm.evaluate_criss_cross_word_classification --config-name=eval_criss_cross_word_classification_{armeni, gwilliams, libribrain} model.criss_cross_checkpoint=/path/to/your/checkpoint.ckpt`
 
 Notes:
