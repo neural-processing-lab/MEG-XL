@@ -2,12 +2,17 @@
 
 This repository contains the code for the paper "MEG-XL: Data-Efficient Brain-to-Text via Long-Context Pre-Training."
 
-Paper: [arXiv]()
+Paper: [arXiv](https://arxiv.org/abs/2602.02494)
 Model weights: [HuggingFace](https://huggingface.co/pnpl/MEG-XL)
 
 If you find this work helpful in your research, please cite the paper:
 ```
-Coming soon.
+@article{jayalath2026megxl,
+  title={{MEG-XL}: Data-Efficient Brain-to-Text via Long-Context Pre-Training},
+  author={Jayalath, Dulhan and Landau, Gilad and Jones, Oiwi Parker},
+  journal={arXiv preprint arXiv:2602.02494},
+  year={2026}
+}
 ```
 
 ## Requirements
