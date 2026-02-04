@@ -113,32 +113,48 @@ MEG-XL/
 ```
 
 ## Fine-tuning MEG-XL for Brain-to-Text
-`python -m brainstorm.evaluate_criss_cross_word_classification --config-name=eval_criss_cross_word_classification_{armeni, gwilliams, libribrain} model.criss_cross_checkpoint=/path/to/your/checkpoint.ckpt`
 
-Notes:
-1. You will need at least 1 GPU with >= 80GiB of GPU VRAM. If you have more than this, you can turn off activation checkpointing, which is used to save GPU memory, and train faster.
-2. If using one of MEG-MASC/Armeni/LibriBrain datasets, you will need to download the dataset from the links at the end of the README and adjust the path in `configs/eval_criss_cross_word_classification_{armeni, gwilliams, libribrain}.yaml` to point to the correct location.
-3. If using an unsupported dataset, you will need to implement your own word aligned data loader. Follow the structure of `brainstorm/data/armeni_word_aligned_dataset.py`.
+```bash
+python -m brainstorm.evaluate_criss_cross_word_classification \
+    --config-name=eval_criss_cross_word_classification_{armeni,gwilliams,libribrain} \
+    model.criss_cross_checkpoint=/path/to/your/checkpoint.ckpt
+```
 
-## Linear probing MEG-XL for Brain-to-Text
-`python -m brainstorm.evaluate_criss_cross_word_classification --config-name=eval_criss_cross_word_classification_linear_probe_{armeni, gwilliams, libribrain} model.criss_cross_checkpoint=/path/to/your/checkpoint.ckpt`
+**Notes:**
+- Requires 1 GPU with >= 80GB VRAM (disable activation checkpointing for faster training if more is available)
+- Download the dataset and update the path in `configs/eval_criss_cross_word_classification_{armeni,gwilliams,libribrain}.yaml`
+- For unsupported datasets, implement a word-aligned data loader following `brainstorm/data/armeni_word_aligned_dataset.py`
 
-Notes: see the notes above for fine-tuning MEG-XL. You may use 1 GPU with >= 40GiB of GPU VRAM.
+## Linear Probing MEG-XL for Brain-to-Text
+
+```bash
+python -m brainstorm.evaluate_criss_cross_word_classification \
+    --config-name=eval_criss_cross_word_classification_linear_probe_{armeni,gwilliams,libribrain} \
+    model.criss_cross_checkpoint=/path/to/your/checkpoint.ckpt
+```
+
+**Notes:**
+- Requires 1 GPU with >= 40GB VRAM
+- See fine-tuning notes above for dataset setup
 
 ## Pre-training MEG-XL
-`python brainstorm/train_criss_cross_multi.py --config-name=train_criss_cross_multi_50hz_med`
 
-Notes:
-1. Pre-training requires at least 1 GPU with >= 80GiB of GPU VRAM. If you have more than this, you can turn off activation checkpointing, which is used to save GPU memory, and train faster.
-2. You will need to download the pre-training datasets linked at the end of the README file and adjust the paths to point to their location in `configs/train_criss_cross_multi_50hz_med`.
+```bash
+python brainstorm/train_criss_cross_multi.py \
+    --config-name=train_criss_cross_multi_50hz_med
+```
 
-## Supported datasets
-For posterity, the datasets used in the paper are as follows:
-- Pre-training datasets:
-    - [CamCAN](https://opendata.mrc-cbu.cam.ac.uk/projects/camcan/)
-    - [MOUS](https://data.ru.nl/collections/di/dccn/DSC_3011020.09_236)
-    - [SMN4Lang](https://openneuro.org/datasets/ds004078)
-- Fine-tuning datasets:
-    - [MEG-MASC](https://osf.io/ag3kj/)
-    - [Armeni](https://data.ru.nl/collections/di/dccn/DSC_3011085.05_995)
-    - [LibriBrain](https://huggingface.co/datasets/pnpl/LibriBrain)
+**Notes:**
+- Requires 1 GPU with >= 80GB VRAM (disable activation checkpointing for faster training if more is available)
+- Download the pre-training datasets and update paths in `configs/train_criss_cross_multi_50hz_med.yaml`
+
+## Supported Datasets
+
+| Split | Dataset | Link |
+|-------|---------|------|
+| Pre-training | CamCAN | [mrc-cbu.cam.ac.uk](https://opendata.mrc-cbu.cam.ac.uk/projects/camcan/) |
+| Pre-training | MOUS | [data.ru.nl](https://data.ru.nl/collections/di/dccn/DSC_3011020.09_236) |
+| Pre-training | SMN4Lang | [OpenNeuro](https://openneuro.org/datasets/ds004078) |
+| Fine-tuning | MEG-MASC | [OSF](https://osf.io/ag3kj/) |
+| Fine-tuning | Armeni | [data.ru.nl](https://data.ru.nl/collections/di/dccn/DSC_3011085.05_995) |
+| Fine-tuning | LibriBrain | [HuggingFace](https://huggingface.co/datasets/pnpl/LibriBrain) |
