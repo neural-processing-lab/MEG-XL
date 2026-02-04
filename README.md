@@ -9,7 +9,7 @@ If you find this work helpful in your research, please cite the paper:
 ```
 @article{jayalath2026megxl,
   title={{MEG-XL}: Data-Efficient Brain-to-Text via Long-Context Pre-Training},
-  author={Jayalath, Dulhan and Jones, Oiwi Parker},
+  author={Jayalath, Dulhan and Parker Jones, Oiwi},
   journal={arXiv preprint arXiv:2602.02494},
   year={2026}
 }
