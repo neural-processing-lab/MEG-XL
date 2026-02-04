@@ -128,7 +128,7 @@ python -m brainstorm.evaluate_criss_cross_word_classification \
 ## Linear Probing MEG-XL for Brain-to-Text
 
 ```bash
-python -m brainstorm.evaluate_criss_cross_word_classification \
+python -m brainstorm.evaluate_criss_cross_word_classification_linear_probe \
     --config-name=eval_criss_cross_word_classification_linear_probe_{armeni,gwilliams,libribrain} \
     model.criss_cross_checkpoint=/path/to/your/checkpoint.ckpt
 ```
