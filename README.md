@@ -6,6 +6,8 @@
 
 **MEG-XL** is a pre-trained model for non-invasive brain signals (MEG/EEG). It uses long-context pre-training on MEG to learn contextualised transferable representations, enabling data-efficient fine-tuning for neural decoding. We find that MEG-XL achieves state-of-the-art brain-to-text word decoding accuracy while requiring significantly less downstream data than prior approaches.
 
+**Paper:** [arXiv:2602.02494](https://arxiv.org/abs/2602.02494) | **Model weights:** [HuggingFace](https://huggingface.co/pnpl/MEG-XL)
+
 If you find this work helpful in your research, please cite the paper:
 ```
 @article{jayalath2026megxl,
