@@ -8,6 +8,8 @@
 
 **Paper:** [arXiv:2602.02494](https://arxiv.org/abs/2602.02494) | **Model weights:** [HuggingFace](https://huggingface.co/pnpl/MEG-XL)
 
+![MEG-XL Overview](assets/teaser.png)
+
 If you find this work helpful in your research, please cite the paper:
 ```
 @article{jayalath2026megxl,
