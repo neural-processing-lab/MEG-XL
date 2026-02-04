@@ -9,7 +9,6 @@ from .libribrain_dataset import LibriBrainMEGDataset
 from .libribrain_word_aligned_dataset import LibriBrainWordAlignedDataset
 from .gwilliams_word_aligned_dataset import GwilliamsWordAlignedDataset
 from .smn4lang_dataset import SMN4LangMEGDataset
-from .word_window_dataset import WordWindowDataset
 from .samplers import RecordingShuffleSampler
 from .multi_dataset import MultiMEGDataset
 from .multi_datamodule import MultiMEGDataModule
@@ -25,7 +24,6 @@ __all__ = [
     "LibriBrainWordAlignedDataset",
     "GwilliamsWordAlignedDataset",
     "SMN4LangMEGDataset",
-    "WordWindowDataset",
     "RecordingShuffleSampler",
     "MultiMEGDataset",
     "MultiMEGDataModule",

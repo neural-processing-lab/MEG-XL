@@ -1,9 +1,10 @@
-# MEG-<ins>XL</ins>: Data-Efficient Brain-to-Text via Long-Context Pre-Training
+# MEG-XL
 
-This repository contains the code for the paper "MEG-XL: Data-Efficient Brain-to-Text via Long-Context Pre-Training."
+[![arXiv](https://img.shields.io/badge/arXiv-2602.02494-b31b1b.svg)](https://arxiv.org/abs/2602.02494)
+[![HuggingFace](https://img.shields.io/badge/HuggingFace-Model-yellow)](https://huggingface.co/pnpl/MEG-XL)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-Paper: [arXiv](https://arxiv.org/abs/2602.02494)
-Model weights: [HuggingFace](https://huggingface.co/pnpl/MEG-XL)
+**MEG-XL** is a pre-trained model for non-invasive brain signals (MEG/EEG). It uses long-context pre-training on MEG to learn contextualised transferable representations, enabling data-efficient fine-tuning for neural decoding. We find that MEG-XL achieves state-of-the-art brain-to-text word decoding accuracy while requiring significantly less downstream data than prior approaches.
 
 If you find this work helpful in your research, please cite the paper:
 ```
@@ -14,6 +15,16 @@ If you find this work helpful in your research, please cite the paper:
   year={2026}
 }
 ```
+
+## Table of Contents
+- [Requirements](#requirements)
+- [Setup](#setup)
+- [Quick Start](#quick-start)
+- [Project Structure](#project-structure)
+- [Fine-tuning](#fine-tuning-meg-xl-for-brain-to-text)
+- [Linear Probing](#linear-probing-meg-xl-for-brain-to-text)
+- [Pre-training](#pre-training-meg-xl)
+- [Supported Datasets](#supported-datasets)
 
 ## Requirements
 - python >= 3.12
@@ -32,6 +43,73 @@ The code for the pre-trained tokenizer is currently only available by request fr
 5. (Optional) download pre-trained MEG-XL weights from [HuggingFace](https://huggingface.co/pnpl/MEG-XL)
 6. Follow the specific notes below depending on how you wish to use MEG-XL
 
+## Quick Start
+
+```python
+import torch
+from brainstorm.neuro_tokenizers.biocodec.model import BioCodecModel
+from brainstorm.models.criss_cross_transformer import CrissCrossTransformerModule
+
+# Load tokenizer
+tokenizer = BioCodecModel._get_optimized_model()
+ckpt = torch.load("brainstorm/neuro_tokenizers/biocodec_ckpt.pt", map_location="cuda")
+tokenizer.load_state_dict({k.replace("_orig_mod.", ""): v for k, v in ckpt["model_state_dict"].items()})
+tokenizer.eval()
+
+# Load MEG-XL
+ckpt = torch.load("path/to/megxl_checkpoint.ckpt", map_location="cuda")
+model = CrissCrossTransformerModule(tokenizer=tokenizer, **ckpt["hyper_parameters"])
+model.load_state_dict(ckpt["state_dict"], strict=False)
+model.eval()
+
+# Prepare inputs (shapes for 150s segment at 50Hz with 306 MEG channels)
+# meg: [batch, channels, time] - raw MEG signal
+# sensor_xyz: [batch, channels, 3] - sensor positions (normalized)
+# sensor_abc: [batch, channels, 3] - sensor orientations
+# sensor_types: [batch, channels] - 0=gradiometer, 1=magnetometer
+# sensor_mask: [batch, channels] - 1=valid sensor, 0=padding
+
+# Forward pass (apply_mask=False for inference)
+with torch.no_grad():
+    output = model(meg, sensor_xyz, sensor_abc, sensor_types, sensor_mask, apply_mask=False)
+    features = output["features"]  # [batch, channels, time_tokens, hidden_dim]
+```
+
+## Project Structure
+
+```
+MEG-XL/
+├── configs/                         # Hydra YAML configs for training and evaluation
+│
+└── brainstorm/
+    ├── train_criss_cross_multi.py                                # Multi-dataset pre-training script
+    ├── evaluate_criss_cross_word_classification.py               # Word classification eval with fine-tuning
+    ├── evaluate_criss_cross_word_classification_linear_probe.py  # Word classification eval with frozen backbone
+    │
+    ├── data/
+    │   ├── utils.py                     # Sensor position normalization utilities
+    │   ├── preprocessing.py             # MEG preprocessing (filtering, resampling, caching)
+    │   ├── samplers.py                  # Recording-level shuffle sampler for efficient I/O
+    │   ├── lightning_datamodule.py      # PyTorch Lightning DataModule for single dataset
+    │   ├── multi_datamodule.py          # DataModule for multi-dataset pre-training
+    │   ├── multi_dataset.py             # Wrapper combining multiple MEG datasets
+    │   ├── subsampled_dataset.py        # Wrapper for recording subsampling with sampler compat
+    │   ├── *_dataset.py                 # Per-corpus dataset implementations
+    │   └── *_word_aligned_dataset.py    # Per-corpus word-aligned segment datasets
+    │
+    ├── models/
+    │   ├── criss_cross_transformer.py  # Main model with temporal masking and RVQ prediction
+    │   ├── spatial_attention.py        # Gaussian Fourier embeddings for 3D sensor positions
+    │   └── attentional/                # Spatial-temporal attention modules
+    │
+    ├── losses/
+    │   └── contrastive.py  # CLIP-style contrastive loss
+    │
+    └── neuro_tokenizers/
+        ├── biocodec_ckpt.pt  # Pre-trained BioCodec checkpoint
+        └── biocodec/         # Neural signal tokenizer with RVQ
+```
+
 ## Fine-tuning MEG-XL for Brain-to-Text
 `python -m brainstorm.evaluate_criss_cross_word_classification --config-name=eval_criss_cross_word_classification_{armeni, gwilliams, libribrain} model.criss_cross_checkpoint=/path/to/your/checkpoint.ckpt`
 
@@ -40,7 +118,7 @@ Notes:
 2. If using one of MEG-MASC/Armeni/LibriBrain datasets, you will need to download the dataset from the links at the end of the README and adjust the path in `configs/eval_criss_cross_word_classification_{armeni, gwilliams, libribrain}.yaml` to point to the correct location.
 3. If using an unsupported dataset, you will need to implement your own word aligned data loader. Follow the structure of `brainstorm/data/armeni_word_aligned_dataset.py`.
 
-## Linear probing MEG-XL
+## Linear probing MEG-XL for Brain-to-Text
 `python -m brainstorm.evaluate_criss_cross_word_classification --config-name=eval_criss_cross_word_classification_linear_probe_{armeni, gwilliams, libribrain} model.criss_cross_checkpoint=/path/to/your/checkpoint.ckpt`
 
 Notes: see the notes above for fine-tuning MEG-XL. You may use 1 GPU with >= 40GiB of GPU VRAM.

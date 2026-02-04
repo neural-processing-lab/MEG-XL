@@ -13,7 +13,6 @@ from .camcan_dataset import CamCANMEGDataset
 from .libribrain_dataset import LibriBrainMEGDataset
 from .smn4lang_dataset import SMN4LangMEGDataset
 from .multi_dataset import MultiMEGDataset
-from .cross_sample_dataset import CrossSampleMixingDataset
 from .subsampled_dataset import SubsampledRecordingDataset
 
 
@@ -136,8 +135,6 @@ class MultiMEGDataModule(pl.LightningDataModule):
         debug_mode: bool = False,
         shuffle_segments: bool = False,
         shuffle_segment_duration: float = 3.0,
-        cross_sample_mixing: bool = False,
-        mixing_segment_duration: float = 3.0,
         recording_subsample_prop: Optional[float] = None,
     ):
         super().__init__()
@@ -160,8 +157,6 @@ class MultiMEGDataModule(pl.LightningDataModule):
         self.debug_mode = debug_mode
         self.shuffle_segments = shuffle_segments
         self.shuffle_segment_duration = shuffle_segment_duration
-        self.cross_sample_mixing = cross_sample_mixing
-        self.mixing_segment_duration = mixing_segment_duration
         self.recording_subsample_prop = recording_subsample_prop
 
         # Validate recording_subsample_prop
@@ -625,15 +620,6 @@ class MultiMEGDataModule(pl.LightningDataModule):
 
                 print(f"\n=== Training Dataset {i+1}: {config['type']} ===")
                 dataset = self._create_dataset(config, split="train")
-
-                # Wrap with CrossSampleMixingDataset if enabled
-                if self.cross_sample_mixing:
-                    print(f"  Wrapping with CrossSampleMixingDataset (mixing {self.mixing_segment_duration}s segments)")
-                    dataset = CrossSampleMixingDataset(
-                        base_dataset=dataset,
-                        segment_duration=self.segment_length,
-                        subsegment_duration=self.mixing_segment_duration,
-                    )
 
                 train_datasets.append(dataset)
                 dataset_names.append(config['type'])

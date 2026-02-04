@@ -174,8 +174,6 @@ def main(cfg: DictConfig):
         debug_mode=cfg.data.get("debug_mode", False),
         shuffle_segments=cfg.data.get("shuffle_segments", False),
         shuffle_segment_duration=cfg.data.get("shuffle_segment_duration", 3.0),
-        cross_sample_mixing=cfg.data.get("cross_sample_mixing", False),
-        mixing_segment_duration=cfg.data.get("mixing_segment_duration", 3.0),
         recording_subsample_prop=cfg.data.get("recording_subsample_prop", None),
     )
 
