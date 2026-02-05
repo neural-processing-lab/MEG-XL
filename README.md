@@ -163,4 +163,4 @@ python brainstorm/train_criss_cross_multi.py \
 
 ## Acknowledgements
 
-We thank the authors of [BioCodec](https://arxiv.org/abs/2510.09095) for sharing their neural tokenizer code and checkpoint, the authors of [BrainOmni](https://github.com/OpenTSLab/BrainOmni) for sharing their criss-cross attention implementation, and Stéphane d'Ascoli for sharing the [D-SigLIP](https://www.nature.com/articles/s41467-025-65499-0) contrastive loss code.
+We thank the authors of [BioCodec](https://arxiv.org/abs/2510.09095) for sharing their neural tokenizer code and checkpoint, the authors of [BrainOmni](https://github.com/OpenTSLab/BrainOmni) for their criss-cross attention implementation, and Stéphane d'Ascoli for sharing the [D-SigLIP](https://www.nature.com/articles/s41467-025-65499-0) contrastive loss code.
