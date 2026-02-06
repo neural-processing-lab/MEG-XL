@@ -62,9 +62,22 @@ tokenizer.load_state_dict({k.replace("_orig_mod.", ""): v for k, v in ckpt["mode
 tokenizer.eval()
 
 # Load MEG-XL
-ckpt = torch.load("path/to/megxl_checkpoint.ckpt", map_location="cuda")
-model = CrissCrossTransformerModule(tokenizer=tokenizer, **ckpt["hyper_parameters"])
-model.load_state_dict(ckpt["state_dict"], strict=False)
+checkpoint = torch.load("path/to/megxl_checkpoint.ckpt", map_location="cuda")
+hparams = checkpoint['hyper_parameters']
+model = CrissCrossTransformerModule(
+    tokenizer=tokenizer,
+    **hparams
+).to("cuda")
+# Skip loading RoPE weights (computed deterministically)
+state_dict = checkpoint['state_dict']
+filtered_state_dict = {}
+skipped_rope_keys = []
+for key, value in state_dict.items():
+    if 'rope_embedding_layer.rotate' in key:
+        skipped_rope_keys.append(key)
+    else:
+        filtered_state_dict[key] = value
+missing_keys, unexpected_keys = model.load_state_dict(filtered_state_dict, strict=False)
 model.eval()
 
 # Prepare inputs (shapes for 150s segment at 50Hz with 306 MEG channels)
