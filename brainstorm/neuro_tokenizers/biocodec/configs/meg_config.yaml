@@ -1,0 +1,74 @@
+# BioCodec MEG Training Configuration
+# Train from scratch on Armeni MEG dataset
+
+common:
+  save_interval: 1
+  test_interval: 1
+  log_interval: 5
+  max_epoch: 20
+  seed: 42
+  amp: False  # keep it False for stability
+  gpus: "0"
+
+datasets:
+  # Armeni dataset paths
+  data_root: "/path/to/armeni2022"
+  cache_dir: "./data/cache"
+
+  # Segment configuration
+  segment_length: 1.0  # seconds
+
+  # Train/test split
+  val_session: "ses-010"  # Session to use for validation/testing
+
+  # Subject and task filters (None = use all)
+  subjects: null  # ["sub-001", "sub-002", "sub-003"]
+  tasks: ["compr"]
+
+  # Preprocessing parameters (matching train_rvq)
+  l_freq: 0.1  # Low-pass filter cutoff (Hz)
+  h_freq: 128.0  # High-pass filter cutoff (Hz)
+  target_sfreq: 256.0  # Target sampling frequency (Hz)
+
+  # DataLoader settings
+  batch_size: 2  # Small batch size due to 269 channels
+  num_workers: 4
+  pin_memory: True
+
+checkpoint:
+  resume: False  # Training from scratch
+  checkpoint_path: ''
+  save_folder: 'ckpt_meg'
+  save_location: '${checkpoint.save_folder}/biocodec_meg_bs${datasets.batch_size}_lr${optimization.lr}_'
+
+optimization:
+  lr: 1e-4
+  warmup: 5  # Warmup epochs
+  weights:
+    l_t: 0.2  # Time-domain loss weight
+    l_f: 1.0  # Frequency-domain loss weight
+
+model:
+  sample_rate: 256  # Must match target_sfreq
+  normalize: False
+  filters: 32
+  ratios: [3, 2, 2]  # Downsampling ratios (256 -> 85 -> 42 -> 21 Hz)
+  causal: True
+  norm: weight_norm
+  segment: None
+  name: biocodec_meg
+  q_bins: 256  # Codebook size
+  n_q: 6  # Number of quantizer levels
+
+distributed:
+  world_size: 1
+  data_parallel: False
+  find_unused_parameters: False
+  torch_distributed_debug: False
+  init_method: tcp
+  master_addr: localhost
+  master_port: 6008
+
+hydra:
+  run:
+    dir: ./runs/biocodec_meg/${now:%Y-%m-%d}_${now:%H-%M-%S}

@@ -36,16 +36,17 @@ If you find this work helpful in your research, please cite the paper:
 
 ## Setup
 
-### Tokenizer (BioCodec) Setup
-The code for the pre-trained tokenizer is currently only available by request from the authors. Until they release it publicly, please:
-1. Request access to code and checkpoints for [BioCodec](https://arxiv.org/abs/2510.09095) through the authors' email
-2. Place their code in `brainstorm/neuro_tokenizers/biocodec` and the checkpoint in `brainstorm/neuro_tokenizers/biocodec_ckpt.pt`
-
 ### MEG-XL Setup
-3. (Optional) create and activate a new virtual environment with python >= 3.12, e.g. `conda create -n megxlenv python=3.12.12 && conda activate megxlenv`
-4. `pip install -r requirements.txt`
-5. (Optional) download pre-trained MEG-XL weights from [HuggingFace](https://huggingface.co/pnpl/MEG-XL)
-6. Follow the specific notes below depending on how you wish to use MEG-XL
+1. Create and activate a virtual environment with python >= 3.12:
+
+```bash
+conda create -n megxlenv python=3.12.12
+conda activate megxlenv
+```
+
+2. Install required pip packages: `pip install -r requirements.txt`
+3. Download pre-trained MEG-XL weights from [HuggingFace](https://huggingface.co/pnpl/MEG-XL)
+4. Follow the notes below depending on how you wish to use MEG-XL
 
 ## Quick Start
 
@@ -163,4 +164,4 @@ python brainstorm/train_criss_cross_multi.py \
 
 ## Acknowledgements
 
-We thank the authors of [BioCodec](https://arxiv.org/abs/2510.09095) for sharing their neural tokenizer code and checkpoint, the authors of [BrainOmni](https://github.com/OpenTSLab/BrainOmni) for their criss-cross attention implementation, and Stéphane d'Ascoli for sharing the [D-SigLIP](https://www.nature.com/articles/s41467-025-65499-0) contrastive loss code.
+We thank the authors of [BioCodec](https://arxiv.org/abs/2510.09095) for sharing their [neural tokenizer code and checkpoint](https://github.com/klean2050/BioCodec-release), the authors of [BrainOmni](https://github.com/OpenTSLab/BrainOmni) for their [criss-cross attention implementation](https://github.com/OpenTSLab/BrainOmni), and Stéphane d'Ascoli for sharing the [D-SigLIP](https://www.nature.com/articles/s41467-025-65499-0) contrastive loss code.

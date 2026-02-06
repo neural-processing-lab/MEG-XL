@@ -1,0 +1,66 @@
+common:
+  save_interval: 1
+  test_interval: 1
+  log_interval: 10
+  max_epoch: 20
+  seed: 79911092
+  amp: False  # keep it False!
+  gpus: "0"
+  codec_path: /PATH/TO/biocodec_trained.pt
+  is_emg: False
+  
+datasets:
+  name: TUAB
+  proc_path: /PATH/TO/data-processed/
+  codes_path: /PATH/TO/data-codes/
+  batch_size: 128
+  num_workers: 0
+  pin_memory: True
+  train_folds: [0, 1, 2]
+  valid_folds: [3]
+  test_folds: [4]
+
+optimization:
+  lr: 1e-3
+  decay: 1e-2
+  label_smoothing: 0.1
+
+model:
+  sample_rate: 250  # 1000 for EMG
+  n_channels: 21
+  n_timesteps: 105
+  n_classes: 2
+  d_model: 16
+  num_heads: 8
+  num_layers: 1
+  n_used: 6
+
+pretrained:
+  sample_rate: 250
+  # sample_rate: 1000
+  normalize: False
+  filters: 32
+  ratios: [3, 2, 2]
+  causal: True
+  norm: weight_norm
+  segment: None
+  name: my_biocodec
+  q_bins: 256
+  n_q: 6
+
+checkpoint:
+  resume: False
+  checkpoint_path: ''
+  save_folder: '/home/ec2-user/runs/ckpt_${datasets.name}'
+  save_location: '${checkpoint.save_folder}/concat_opt2_5M_nq${model.n_used}_bs${datasets.batch_size}_' 
+
+distributed:
+  data_parallel: False
+  world_size: 1
+  find_unused_parameters: False
+  torch_distributed_debug: False
+  init_method: tcp
+
+eval:
+  aggregate: 10
+  hop_sec: 10

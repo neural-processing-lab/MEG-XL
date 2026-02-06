@@ -1,0 +1,55 @@
+common:
+  save_interval: 1
+  test_interval: 1
+  log_interval: 5
+  max_epoch: 20
+  seed: 79911092
+  amp: False  # keep it False!
+  gpus: "0"
+
+datasets:
+  train_path: /PATH/TO/biocodec-data/tueg-processed-h5-splits-norm/
+  test_path: /PATH/TO/biocodec-data/tueg-processed-h5-splits-norm/
+  batch_size: 512
+  tensor_cut: 5
+  num_workers: 16
+  fixed_length: 5000000
+  pin_memory: True
+
+checkpoint:
+  resume: False
+  checkpoint_path: ''
+  save_folder: 'ckpt'
+  save_location: '${checkpoint.save_folder}/bs${datasets.batch_size}_cut${datasets.tensor_cut}_len${datasets.fixed_length}_' 
+
+optimization:
+  lr: 1e-4
+  warmup: 5
+  weights:
+    l_t: 0.2
+    l_f: 1.0
+
+model:
+  sample_rate: 250
+  normalize: False
+  filters: 32
+  ratios: [3, 2, 2]
+  causal: True
+  norm: weight_norm
+  segment: None
+  name: my_biocodec
+  q_bins: 256
+  n_q: 6
+
+distributed:
+  world_size: 1
+  data_parallel: False
+  find_unused_parameters: False
+  torch_distributed_debug: False
+  init_method: tcp
+  master_addr: localhost
+  master_port: 6008
+
+hydra:
+  run:
+    dir: /PATH/TO/biocodec-runs/${now:%Y-%m-%d}_${now:%H-%M-%S}
