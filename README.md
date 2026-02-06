@@ -125,7 +125,7 @@ python -m brainstorm.evaluate_criss_cross_word_classification \
 
 **Notes:**
 - Requires 1 GPU with >= 80GB VRAM (disable activation checkpointing for faster training if more is available)
-- Download the dataset and update the path in `configs/eval_criss_cross_word_classification_{armeni,gwilliams,libribrain}.yaml`
+- Download the dataset (see [Supported Datasets](#supported-datasets)) and update the path in `configs/eval_criss_cross_word_classification_{armeni,gwilliams,libribrain}.yaml`
 - For unsupported datasets, implement a word-aligned data loader following `brainstorm/data/armeni_word_aligned_dataset.py`
 
 ## Linear Probing MEG-XL for Brain-to-Text
