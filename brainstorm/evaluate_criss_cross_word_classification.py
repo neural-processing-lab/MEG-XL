@@ -52,6 +52,7 @@ from brainstorm.neuro_tokenizers.biocodec.model import BioCodecModel
 from brainstorm.data.armeni_word_aligned_dataset import ArmeniWordAlignedDataset
 from brainstorm.data.gwilliams_word_aligned_dataset import GwilliamsWordAlignedDataset
 from brainstorm.data.libribrain_word_aligned_dataset import LibriBrainWordAlignedDataset
+from brainstorm.data.broderick_word_aligned_dataset import BroderickWordAlignedDataset
 from brainstorm.losses.contrastive import SigLipLoss
 
 logger = logging.getLogger(__name__)
@@ -75,6 +76,7 @@ def get_dataset_class(dataset_type: str):
         "armeni": ArmeniWordAlignedDataset,
         "gwilliams": GwilliamsWordAlignedDataset,
         "libribrain": LibriBrainWordAlignedDataset,
+        "broderick": BroderickWordAlignedDataset,
     }
 
     if dataset_type not in dataset_classes:
@@ -98,6 +100,7 @@ def get_default_max_channel_dim(dataset_type: str) -> int:
         "armeni": 306,
         "gwilliams": 208,
         "libribrain": 306,
+        "broderick": 128,
     }
     return defaults.get(dataset_type, 306)
 

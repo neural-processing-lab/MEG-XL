@@ -8,6 +8,7 @@ from .camcan_dataset import CamCANMEGDataset
 from .libribrain_dataset import LibriBrainMEGDataset
 from .libribrain_word_aligned_dataset import LibriBrainWordAlignedDataset
 from .gwilliams_word_aligned_dataset import GwilliamsWordAlignedDataset
+from .broderick_word_aligned_dataset import BroderickWordAlignedDataset
 from .smn4lang_dataset import SMN4LangMEGDataset
 from .samplers import RecordingShuffleSampler
 from .multi_dataset import MultiMEGDataset
@@ -23,6 +24,7 @@ __all__ = [
     "LibriBrainMEGDataset",
     "LibriBrainWordAlignedDataset",
     "GwilliamsWordAlignedDataset",
+    "BroderickWordAlignedDataset",
     "SMN4LangMEGDataset",
     "RecordingShuffleSampler",
     "MultiMEGDataset",

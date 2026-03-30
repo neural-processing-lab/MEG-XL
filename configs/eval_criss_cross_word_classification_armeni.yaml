@@ -140,7 +140,7 @@ evaluation:
 # Logging settings
 logging:
   wandb_project: "brainstorm-eval"
-  experiment_name: "criss-cross-word-classification-1ses-50Hz"
+  experiment_name: "criss-cross-word-classification-armeni-50Hz"
   log_every_n_steps: 10
   save_dir: "./logs/word_classification"
 
