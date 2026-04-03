@@ -57,9 +57,39 @@ from brainstorm.data.armeni_word_aligned_dataset import ArmeniWordAlignedDataset
 from brainstorm.data.gwilliams_word_aligned_dataset import GwilliamsWordAlignedDataset
 from brainstorm.data.libribrain_word_aligned_dataset import LibriBrainWordAlignedDataset
 from brainstorm.data.broderick_word_aligned_dataset import BroderickWordAlignedDataset
+from brainstorm.data.libribrain100_word_aligned_dataset import LibriBrain100WordAlignedDataset
 from brainstorm.losses.contrastive import SigLipLoss
 
 logger = logging.getLogger(__name__)
+
+
+# ============================================================================
+# Named Retrieval Word Sets
+# ============================================================================
+
+NAMED_RETRIEVAL_SETS = {
+    "pnpl2026": [
+        # Function/grammar
+        "a", "the", "to", "in", "of", "and", "but", "or", "is", "was",
+        "have", "not", "that", "this", "if", "for", "by", "with", "from",
+        "can", "will", "should", "they", "he", "she", "it", "we", "you",
+        "my", "your", "me", "him", "her", "some", "any",
+        # Core verbs
+        "be", "do", "go", "say", "think", "know", "take", "give", "come",
+        "find", "make", "see", "get", "let", "had", "made", "did", "could",
+        "would", "may",
+        # Content nouns
+        "time", "life", "man", "way", "thing", "place", "mind", "matter",
+        "side", "case", "hand", "part", "door", "friend", "nothing",
+        # Adjectives/adverbs
+        "good", "great", "right", "more", "never", "only", "now", "just",
+        "well", "much", "long", "first", "sure", "small", "few", "ever",
+        "quite", "whole", "clear", "enough",
+        # Connective tissue
+        "here", "there", "about", "over", "out", "up", "down", "into",
+        "together", "without",
+    ],
+}
 
 
 # ============================================================================
@@ -81,6 +111,7 @@ def get_dataset_class(dataset_type: str):
         "gwilliams": GwilliamsWordAlignedDataset,
         "libribrain": LibriBrainWordAlignedDataset,
         "broderick": BroderickWordAlignedDataset,
+        "libribrain100": LibriBrain100WordAlignedDataset,
     }
 
     if dataset_type not in dataset_classes:
@@ -106,6 +137,7 @@ def get_default_max_channel_dim(dataset_type: str) -> int:
         "gwilliams": 208,
         "libribrain": 306,
         "broderick": 128,
+        "libribrain100": 306,
     }
     return defaults.get(dataset_type, 306)
 
@@ -778,6 +810,153 @@ def compute_balanced_top_k_accuracy_with_retrieval_set(
     return balanced_accuracy
 
 
+def compute_top_k_accuracy_with_word_list(
+    pred_embeddings: torch.Tensor,
+    true_labels: torch.Tensor,
+    vocab_embeddings: torch.Tensor,
+    word_indices: torch.Tensor,
+    set_name: str,
+    k: int = 10
+) -> Dict[str, Any]:
+    """
+    Compute top-k retrieval accuracy using a named set of specific words.
+
+    Unlike compute_top_k_accuracy_with_retrieval_set which uses the top-N most
+    frequent words, this function uses an arbitrary set of words identified by
+    their vocabulary indices.
+
+    Args:
+        pred_embeddings: [N, 1024] predicted word embeddings
+        true_labels: [N] ground truth vocabulary indices
+        vocab_embeddings: [vocab_size, 1024] T5 embeddings for all vocabulary words
+        word_indices: [M] vocabulary indices of the words in this named set
+        set_name: Name of the retrieval set (used in metric keys)
+        k: K value for top-k retrieval (default: 10)
+
+    Returns:
+        metrics: Dict with topk_accuracy, n_samples, n_skipped keyed by set_name
+    """
+    # Filter to samples whose true label is in the word list
+    in_set = torch.isin(true_labels, word_indices)
+    n_samples = in_set.sum().item()
+    n_skipped = len(true_labels) - n_samples
+
+    if n_samples == 0:
+        return {
+            f'top{k}_accuracy_{set_name}': 0.0,
+            f'n_samples_{set_name}': 0,
+            f'n_skipped_{set_name}': n_skipped
+        }
+
+    # Get filtered predictions and labels
+    filtered_pred = pred_embeddings[in_set]  # [n_samples, 1024]
+    filtered_labels = true_labels[in_set]  # [n_samples]
+
+    # Get retrieval set embeddings (gather specific word indices)
+    retrieval_embeddings = vocab_embeddings[word_indices]  # [M, 1024]
+
+    # Remap labels from vocab indices to local indices within the retrieval set
+    # Build mapping: vocab_idx -> local_idx
+    idx_map = {int(vi): i for i, vi in enumerate(word_indices)}
+    local_labels = torch.tensor(
+        [idx_map[int(l)] for l in filtered_labels],
+        dtype=torch.long, device=filtered_pred.device
+    )
+
+    # Compute cosine similarity against retrieval set only
+    pred_norm = F.normalize(filtered_pred, p=2, dim=1)
+    retrieval_norm = F.normalize(retrieval_embeddings, p=2, dim=1)
+    similarity = torch.matmul(pred_norm, retrieval_norm.T)  # [n_samples, M]
+
+    # Get top-k predictions
+    actual_k = min(k, len(word_indices))
+    _, top_k_indices = torch.topk(similarity, k=actual_k, dim=1)  # [n_samples, k]
+
+    # Check if true label is in top-k
+    local_labels_expanded = local_labels.unsqueeze(1).expand(-1, actual_k)
+    hits = (top_k_indices == local_labels_expanded).any(dim=1)
+
+    accuracy = hits.float().mean().item()
+
+    return {
+        f'top{k}_accuracy_{set_name}': accuracy,
+        f'n_samples_{set_name}': n_samples,
+        f'n_skipped_{set_name}': n_skipped
+    }
+
+
+def compute_balanced_top_k_accuracy_with_word_list(
+    pred_embeddings: torch.Tensor,
+    true_labels: torch.Tensor,
+    vocab_embeddings: torch.Tensor,
+    word_indices: torch.Tensor,
+    set_name: str,
+    k: int = 10
+) -> float:
+    """
+    Compute balanced (macro-averaged) top-k retrieval accuracy for a named word set.
+
+    Args:
+        pred_embeddings: [N, 1024] predicted word embeddings
+        true_labels: [N] ground truth vocabulary indices
+        vocab_embeddings: [vocab_size, 1024] T5 embeddings for all vocabulary words
+        word_indices: [M] vocabulary indices of the words in this named set
+        set_name: Name of the retrieval set
+        k: K value for top-k retrieval
+
+    Returns:
+        balanced_accuracy: Macro-averaged top-k accuracy across words in the set
+    """
+    # Filter to samples whose true label is in the word list
+    in_set = torch.isin(true_labels, word_indices)
+    n_samples = in_set.sum().item()
+
+    if n_samples == 0:
+        return 0.0
+
+    # Get filtered predictions and labels
+    filtered_pred = pred_embeddings[in_set]
+    filtered_labels = true_labels[in_set]
+
+    # Get retrieval set embeddings
+    retrieval_embeddings = vocab_embeddings[word_indices]
+
+    # Remap labels to local indices
+    idx_map = {int(vi): i for i, vi in enumerate(word_indices)}
+    local_labels = torch.tensor(
+        [idx_map[int(l)] for l in filtered_labels],
+        dtype=torch.long, device=filtered_pred.device
+    )
+
+    # Compute cosine similarity against retrieval set only
+    pred_norm = F.normalize(filtered_pred, p=2, dim=1)
+    retrieval_norm = F.normalize(retrieval_embeddings, p=2, dim=1)
+    similarity = torch.matmul(pred_norm, retrieval_norm.T)
+
+    actual_k = min(k, len(word_indices))
+    _, top_k_indices = torch.topk(similarity, k=actual_k, dim=1)
+
+    # Compute per-class accuracy for each word in the set
+    per_class_accuracies = []
+
+    for local_idx in range(len(word_indices)):
+        class_mask = (local_labels == local_idx)
+        n_class_samples = class_mask.sum().item()
+
+        if n_class_samples == 0:
+            continue
+
+        class_top_k = top_k_indices[class_mask]
+        hits = (class_top_k == local_idx).any(dim=1)
+        class_acc = hits.float().mean().item()
+
+        per_class_accuracies.append(class_acc)
+
+    balanced_accuracy = sum(per_class_accuracies) / len(per_class_accuracies) if per_class_accuracies else 0.0
+
+    return balanced_accuracy
+
+
 def compute_balanced_top_k_accuracy(
     pred_embeddings: torch.Tensor,
     true_labels: torch.Tensor,
@@ -948,6 +1127,7 @@ def evaluate_epoch(
     criterion: SigLipLoss,
     device: str,
     retrieval_set_sizes: List[int] = [50, 250],
+    named_retrieval_sets: Optional[Dict[str, torch.Tensor]] = None,
     k: int = 10
 ) -> Dict[str, float]:
     """
@@ -965,6 +1145,7 @@ def evaluate_epoch(
         criterion: SigLIP loss function
         device: Device to run on
         retrieval_set_sizes: List of retrieval set sizes to evaluate (e.g., [50, 250])
+        named_retrieval_sets: Optional dict mapping set name to tensor of vocab indices
         k: K value for top-k accuracy (default: 10)
 
     Returns:
@@ -1019,6 +1200,21 @@ def evaluate_epoch(
         )
         metrics[f'balanced_top{k}_accuracy_retrieval{retrieval_size}'] = balanced_acc
 
+    # Compute top-k accuracy for each named retrieval set
+    if named_retrieval_sets:
+        for set_name, word_indices in named_retrieval_sets.items():
+            named_metrics = compute_top_k_accuracy_with_word_list(
+                all_pred_embeddings, all_labels, vocab_embeddings,
+                word_indices=word_indices, set_name=set_name, k=k
+            )
+            metrics.update(named_metrics)
+
+            balanced_acc = compute_balanced_top_k_accuracy_with_word_list(
+                all_pred_embeddings, all_labels, vocab_embeddings,
+                word_indices=word_indices, set_name=set_name, k=k
+            )
+            metrics[f'balanced_top{k}_accuracy_{set_name}'] = balanced_acc
+
     # Embedding quality (computed on all samples)
     emb_metrics = compute_embedding_metrics(all_pred_embeddings, all_target_embeddings)
     metrics.update(emb_metrics)
@@ -1034,7 +1230,8 @@ def train_and_evaluate(
     test_loader: DataLoader,
     vocab_embeddings: torch.Tensor,
     cfg: DictConfig,
-    device: str
+    device: str,
+    named_retrieval_sets: Optional[Dict[str, torch.Tensor]] = None
 ) -> Dict[str, float]:
     """
     Main training and evaluation loop.
@@ -1050,6 +1247,7 @@ def train_and_evaluate(
         vocab_embeddings: [vocab_size, 1024] T5 embeddings
         cfg: Hydra configuration
         device: Device to run on
+        named_retrieval_sets: Optional dict mapping set name to tensor of vocab indices
 
     Returns:
         test_metrics: Final test set metrics
@@ -1132,6 +1330,7 @@ def train_and_evaluate(
             criss_cross_model, linear_probe, val_loader,
             vocab_embeddings, criterion, device,
             retrieval_set_sizes=cfg.evaluation.retrieval_set_sizes,
+            named_retrieval_sets=named_retrieval_sets,
             k=cfg.evaluation.k
         )
 
@@ -1140,6 +1339,7 @@ def train_and_evaluate(
             criss_cross_model, linear_probe, test_loader,
             vocab_embeddings, criterion, device,
             retrieval_set_sizes=cfg.evaluation.retrieval_set_sizes,
+            named_retrieval_sets=named_retrieval_sets,
             k=cfg.evaluation.k
         )
 
@@ -1156,6 +1356,14 @@ def train_and_evaluate(
             test_balanced = test_metrics.get(f'balanced_top{k}_accuracy_retrieval{ret_size}', 0)
             logger.info(f"  [Retrieval {ret_size}] Val top-{k}: {val_acc:.4f}, balanced: {val_balanced:.4f} (n={val_n})")
             logger.info(f"  [Retrieval {ret_size}] Test top-{k}: {test_acc:.4f}, balanced: {test_balanced:.4f}")
+        for set_name in named_retrieval_sets:
+            val_acc = val_metrics.get(f'top{k}_accuracy_{set_name}', 0)
+            val_balanced = val_metrics.get(f'balanced_top{k}_accuracy_{set_name}', 0)
+            val_n = val_metrics.get(f'n_samples_{set_name}', 0)
+            test_acc = test_metrics.get(f'top{k}_accuracy_{set_name}', 0)
+            test_balanced = test_metrics.get(f'balanced_top{k}_accuracy_{set_name}', 0)
+            logger.info(f"  [Retrieval {set_name}] Val top-{k}: {val_acc:.4f}, balanced: {val_balanced:.4f} (n={val_n})")
+            logger.info(f"  [Retrieval {set_name}] Test top-{k}: {test_acc:.4f}, balanced: {test_balanced:.4f}")
 
         # Log to WandB
         log_dict = {
@@ -1172,8 +1380,11 @@ def train_and_evaluate(
 
         wandb.log(log_dict)
 
-        # Use primary retrieval set's balanced accuracy for early stopping
-        primary_metric_key = f'balanced_top{k}_accuracy_retrieval{primary_retrieval_size}'
+        # Use configured metric for early stopping (default: largest retrieval set's balanced accuracy)
+        if cfg.evaluation.get('early_stopping_metric'):
+            primary_metric_key = cfg.evaluation.early_stopping_metric
+        else:
+            primary_metric_key = f'balanced_top{k}_accuracy_retrieval{primary_retrieval_size}'
         val_primary_acc = val_metrics.get(primary_metric_key, 0)
 
         # Scheduler step
@@ -1196,8 +1407,7 @@ def train_and_evaluate(
                 'test_metrics_at_best_val': test_metrics,  # Test metrics at this epoch
                 'config': OmegaConf.to_container(cfg, resolve=True)
             }, checkpoint_path)
-            test_primary_acc = test_metrics.get(f'top{k}_accuracy_retrieval{primary_retrieval_size}', 0)
-            logger.info(f"  Saved best model (val balanced: {best_val_top10_acc:.4f}, test top-{k}@{primary_retrieval_size}: {test_primary_acc:.4f})")
+            logger.info(f"  Saved best model (val {primary_metric_key}: {best_val_top10_acc:.4f})")
         else:
             patience_counter += 1
 
@@ -1219,6 +1429,7 @@ def train_and_evaluate(
         criss_cross_model, linear_probe, test_loader,
         vocab_embeddings, criterion, device,
         retrieval_set_sizes=cfg.evaluation.retrieval_set_sizes,
+        named_retrieval_sets=named_retrieval_sets,
         k=cfg.evaluation.k
     )
 
@@ -1573,6 +1784,20 @@ def main(cfg: DictConfig):
     logger.info(f"  Val: {len(val_dataset)} segments")
     logger.info(f"  Test: {len(test_dataset)} segments")
 
+    # Resolve named retrieval sets to vocab indices
+    named_retrieval_sets = {}
+    for set_name in OmegaConf.to_container(cfg.evaluation.get('named_retrieval_sets', []), resolve=True):
+        if set_name not in NAMED_RETRIEVAL_SETS:
+            logger.warning(f"Unknown named retrieval set '{set_name}', skipping")
+            continue
+        words = NAMED_RETRIEVAL_SETS[set_name]
+        indices = [word_to_idx[w] for w in words if w in word_to_idx]
+        missing = [w for w in words if w not in word_to_idx]
+        logger.info(f"Named retrieval set '{set_name}': {len(indices)}/{len(words)} words found in vocab")
+        if missing:
+            logger.info(f"  Missing words: {missing}")
+        named_retrieval_sets[set_name] = torch.tensor(indices, dtype=torch.long)
+
     # Create collate function
     collate_fn = create_word_level_collate_fn(word_to_idx)
 
@@ -1625,7 +1850,8 @@ def main(cfg: DictConfig):
     test_metrics = train_and_evaluate(
         criss_cross_model, linear_probe,
         train_loader, val_loader, test_loader,
-        vocab_embeddings, cfg, cfg.device
+        vocab_embeddings, cfg, cfg.device,
+        named_retrieval_sets=named_retrieval_sets
     )
 
     # 8. Save final results

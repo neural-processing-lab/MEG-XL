@@ -1,0 +1,152 @@
+# CrissCross Word Classification Evaluation Configuration - LibriBrain100 MEG Dataset
+
+# Model checkpoints
+model:
+  # Training mode: false = fine-tune from pretrained, true = train from scratch
+  train_from_scratch: false
+
+  # Path to pretrained CrissCrossTransformer checkpoint
+  criss_cross_checkpoint: "./checkpoints/criss-cross-multi-dataset-pretrain-50Hz/c5z56xy8/last.ckpt"
+
+  # Path to BioCodec tokenizer checkpoint
+  tokenizer_checkpoint: "./brainstorm/neuro_tokenizers/biocodec_ckpt.pt"
+
+  # Word embedding MLP configuration
+  word_mlp:
+    hidden_dim: 2048
+    embed_dim: 1024  # T5-large embedding dimension
+    dropout: 0.1
+
+# Data settings
+data:
+  # Dataset type
+  dataset_type: "libribrain100"
+
+  # Dataset root directory
+  root: "/data/engs-asr/LibriBrain100"
+  cache_dir: "./data/engs-asr/LibriBrain100/cache"
+
+  # Max channel dimension (Elekta Neuromag system has 306 MEG channels)
+  max_channel_dim: 306
+
+  # Subjects to include (30 subjects)
+  subjects:
+    - "subj01"
+    - "subj02"
+    - "subj03"
+    - "subj04"
+    - "subj05"
+    - "subj06"
+    - "subj07"
+    - "subj08"
+    - "subj09"
+    - "subj10"
+    - "subj11"
+    - "subj12"
+    - "subj13"
+    - "subj14"
+    - "subj15"
+    - "subj16"
+    - "subj17"
+    - "subj18"
+    - "subj19"
+    - "subj20"
+    - "subj21"
+    - "subj22"
+    - "subj23"
+    - "subj24"
+    - "subj25"
+    - "subj26"
+    - "subj27"
+    - "subj28"
+    - "subj29"
+    - "subj30"
+
+  # Split mode: hashed sentence-based splitting
+  use_hashed_split: true
+
+  # Hashed split parameters (used when use_hashed_split=true)
+  split_ratios: [0.8, 0.1, 0.1]  # train, val, test
+  all_sessions:
+    - "chapter_11"
+    - "chapter_12"
+
+  # Session-based temporal split (used when use_hashed_split=false)
+  train_pct: 0.25
+  train_sessions:
+    - "chapter_11"
+
+  val_sessions:
+    - "chapter_12"
+
+  test_sessions:
+    - "chapter_12"
+
+  # Tasks (unused for LibriBrain100, kept for interface compatibility)
+  tasks: null
+
+  # Preprocessing parameters (must match CrissCross pretraining)
+  l_freq: 0.1
+  h_freq: 40.0
+  target_sfreq: 50.0
+
+  # Word window parameters
+  segment_length: 150.0
+  subsegment_duration: 3.0
+  words_per_segment: 50
+  window_onset_offset: -0.5
+
+# T5 embedding settings
+t5:
+  model_name: "t5-large"
+  layer: 12  # Which layer to extract embeddings from
+  cache_dir: "./embeddings_cache"
+
+# Training settings
+training:
+  batch_size: 1
+  num_epochs: 50
+
+  # Learning rates for different training modes
+  criss_cross_lr: 1.0e-5  # Small LR to preserve pretrained features
+  word_mlp_lr: 1.0e-3     # Larger LR for learning from scratch
+
+  # From-scratch mode (train_from_scratch=true): use same LR for all components
+  from_scratch_lr: 1.0e-4
+
+  # Regularization
+  weight_decay: 1.0e-4
+  gradient_clip_val: 1.0
+
+  # Early stopping
+  patience: 10
+  min_delta: 0.001
+
+  # DataLoader settings
+  num_workers: 6
+  pin_memory: true
+
+# Loss settings (SigLIP)
+loss:
+  norm_kind: "xy"
+  temperature: true
+  bias: true
+  reduction: "sum"
+
+# Evaluation settings
+evaluation:
+  retrieval_set_sizes: [50, 250]
+  named_retrieval_sets: ["pnpl2026"]
+  early_stopping_metric: "balanced_top10_accuracy_pnpl2026"
+  k: 10
+
+# Logging settings
+logging:
+  wandb_project: "brainstorm-eval"
+  experiment_name: "criss-cross-word-classification-libribrain100-50Hz"
+  log_every_n_steps: 10
+  save_dir: "./logs/word_classification_libribrain100"
+
+# System settings
+device: "cuda"
+seed: 42
