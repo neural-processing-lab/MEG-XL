@@ -58,6 +58,7 @@ from brainstorm.data.gwilliams_word_aligned_dataset import GwilliamsWordAlignedD
 from brainstorm.data.libribrain_word_aligned_dataset import LibriBrainWordAlignedDataset
 from brainstorm.data.broderick_word_aligned_dataset import BroderickWordAlignedDataset
 from brainstorm.data.libribrain100_word_aligned_dataset import LibriBrain100WordAlignedDataset
+from brainstorm.data.kymatasoto_word_aligned_dataset import KymataSotoWordAlignedDataset
 from brainstorm.losses.contrastive import SigLipLoss
 
 logger = logging.getLogger(__name__)
@@ -112,6 +113,7 @@ def get_dataset_class(dataset_type: str):
         "libribrain": LibriBrainWordAlignedDataset,
         "broderick": BroderickWordAlignedDataset,
         "libribrain100": LibriBrain100WordAlignedDataset,
+        "kymatasoto": KymataSotoWordAlignedDataset,
     }
 
     if dataset_type not in dataset_classes:
@@ -131,6 +133,7 @@ def get_default_max_channel_dim(dataset_type: str) -> int:
     - Gwilliams: 208 MEG channels (KIT/Ricoh system)
     - LibriBrain: 306 MEG channels (Elekta Neuromag system)
     - Broderick: 128 EEG channels
+    - KymataSoto: 306 MEG channels (Elekta/MEGIN Triux system)
     """
     defaults = {
         "armeni": 306,
@@ -138,6 +141,7 @@ def get_default_max_channel_dim(dataset_type: str) -> int:
         "libribrain": 306,
         "broderick": 128,
         "libribrain100": 306,
+        "kymatasoto": 306,
     }
     return defaults.get(dataset_type, 306)
 
