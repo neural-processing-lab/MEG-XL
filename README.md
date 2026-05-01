@@ -4,7 +4,7 @@
 [![HuggingFace](https://img.shields.io/badge/HuggingFace-Model-yellow)](https://huggingface.co/pnpl/MEG-XL)
 [![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
-**MEG-XL** is a pre-trained model for non-invasive electrophysiological brain signals (MEG/EEG). It uses long-context pre-training on MEG to learn contextualised transferable representations, enabling data-efficient fine-tuning for neural decoding. When fine-tuned, MEG-XL achieves state-of-the-art brain-to-text word decoding accuracy while requiring significantly less downstream data than prior approaches.
+**MEG-XL** is a pre-trained model for non-invasive electrophysiological brain signals (MEG/EEG) published at ICML 2026. It uses long-context pre-training on MEG to learn contextualised transferable representations, enabling data-efficient fine-tuning for neural decoding. When fine-tuned, MEG-XL achieves state-of-the-art brain-to-text word decoding accuracy while requiring significantly less downstream data than prior approaches.
 
 **Paper:** [arXiv:2602.02494](https://arxiv.org/abs/2602.02494) | **Model weights:** [HuggingFace](https://huggingface.co/pnpl/MEG-XL)
 
@@ -12,10 +12,10 @@
 
 If you find this work helpful in your research, please cite the paper:
 ```bibtex
-@article{jayalath2026megxl,
+@inproceedings{jayalath2026megxl,
   title={{MEG-XL}: Data-Efficient Brain-to-Text via Long-Context Pre-Training},
   author={Jayalath, Dulhan and Parker Jones, Oiwi},
-  journal={arXiv preprint arXiv:2602.02494},
+  booktitle={Forty-third International Conference on Machine Learning, {ICML} 2026, Seoul, South Korea, July 6-11, 2026},
   year={2026}
 }
 ```
