@@ -120,7 +120,8 @@ class ArmeniWordAlignedDataset(Dataset):
         channel_filter: Callable[[str], bool] = lambda x: x.startswith('M'),
         max_channel_dim: Optional[int] = None,
         baseline_duration: float = 0.5,
-        clip_range: tuple = (-5, 5)
+        clip_range: tuple = (-5, 5),
+        allow_incomplete_segments: bool = False,
     ):
         self.data_root = Path(data_root)
         self.segment_length = segment_length
@@ -131,6 +132,7 @@ class ArmeniWordAlignedDataset(Dataset):
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self.baseline_duration = baseline_duration
         self.clip_range = clip_range
+        self.allow_incomplete_segments = allow_incomplete_segments
 
         self.l_freq = l_freq
         self.h_freq = h_freq
@@ -375,6 +377,9 @@ class ArmeniWordAlignedDataset(Dataset):
             if len(current_group) == self.words_per_segment:
                 word_groups.append(current_group.copy())
                 current_group = []
+
+        if self.allow_incomplete_segments and len(current_group) > 0:
+            word_groups.append(current_group.copy())
 
         return word_groups
 

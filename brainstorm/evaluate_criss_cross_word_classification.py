@@ -1434,7 +1434,8 @@ def main(cfg: DictConfig):
             l_freq=cfg.data.l_freq,
             h_freq=cfg.data.h_freq,
             target_sfreq=cfg.data.target_sfreq,
-            max_channel_dim=max_channel_dim
+            max_channel_dim=max_channel_dim,
+            allow_incomplete_segments=True,
         )
 
         logger.info(f"Total segments across all sessions: {len(full_dataset)}")
@@ -1444,6 +1445,7 @@ def main(cfg: DictConfig):
         train_indices = []
         val_indices = []
         test_indices = []
+        skipped_incomplete_train = 0
         sentence_counts = {}  # Track sentence occurrences
         idx_to_sentence = {}  # Cache sentences for validation
 
@@ -1463,9 +1465,13 @@ def main(cfg: DictConfig):
 
                 # Assign to split based on hash
                 split = hash_sentence_to_split(words, cfg.data.split_ratios, cfg.seed)
+                is_complete_group = len(word_group) == cfg.data.words_per_segment
 
                 if split == "train":
-                    train_indices.append(idx)
+                    if is_complete_group:
+                        train_indices.append(idx)
+                    else:
+                        skipped_incomplete_train += 1
                 elif split == "val":
                     val_indices.append(idx)
                 else:  # test
@@ -1482,6 +1488,7 @@ def main(cfg: DictConfig):
         logger.info(f"  Train: {len(train_indices)} segments ({len(train_indices)/len(full_dataset)*100:.1f}%)")
         logger.info(f"  Val: {len(val_indices)} segments ({len(val_indices)/len(full_dataset)*100:.1f}%)")
         logger.info(f"  Test: {len(test_indices)} segments ({len(test_indices)/len(full_dataset)*100:.1f}%)")
+        logger.info(f"  Skipped incomplete train segments: {skipped_incomplete_train}")
 
         # Create subset datasets
         train_dataset_full = torch.utils.data.Subset(full_dataset, train_indices)
@@ -1575,7 +1582,8 @@ def main(cfg: DictConfig):
             l_freq=cfg.data.l_freq,
             h_freq=cfg.data.h_freq,
             target_sfreq=cfg.data.target_sfreq,
-            max_channel_dim=max_channel_dim
+            max_channel_dim=max_channel_dim,
+            allow_incomplete_segments=False,
         )
 
         print("Original training dataset size:", len(train_dataset))
@@ -1608,7 +1616,8 @@ def main(cfg: DictConfig):
             l_freq=cfg.data.l_freq,
             h_freq=cfg.data.h_freq,
             target_sfreq=cfg.data.target_sfreq,
-            max_channel_dim=max_channel_dim
+            max_channel_dim=max_channel_dim,
+            allow_incomplete_segments=True,
         )
 
         test_dataset = DatasetClass(
@@ -1624,7 +1633,8 @@ def main(cfg: DictConfig):
             l_freq=cfg.data.l_freq,
             h_freq=cfg.data.h_freq,
             target_sfreq=cfg.data.target_sfreq,
-            max_channel_dim=max_channel_dim
+            max_channel_dim=max_channel_dim,
+            allow_incomplete_segments=True,
         )
 
         # Build vocabulary from ALL datasets using ALL unique words
