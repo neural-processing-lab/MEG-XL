@@ -13,7 +13,10 @@ from brainstorm.data.libribrain100_word_aligned_dataset import (
     TIMIT_TEST_SPEAKERS,
     TIMIT_VALIDATION_SPEAKERS,
 )
-from brainstorm.evaluate_criss_cross_word_classification import get_dataset_class
+from brainstorm.evaluate_criss_cross_word_classification import (
+    _build_named_retrieval_sets,
+    get_dataset_class,
+)
 
 
 def _write_sensor_json(root: Path) -> None:
@@ -223,3 +226,17 @@ def test_libribrain100_factory_and_config_smoke():
     assert cfg.data.dataset_type == "libribrain100"
     assert cfg.data.split_strategy == "libribrain100"
     assert list(cfg.data.root) == ["/data/engs-asr/LibriBrain_hf", "/data/engs-asr/LibriBrain2_hf"]
+    assert list(cfg.evaluation.k_values) == [1, 10]
+    assert cfg.evaluation.primary_k == 10
+    assert len(cfg.evaluation.named_retrieval_sets.datafit50) == 50
+    assert len(cfg.evaluation.named_retrieval_sets.moses50) == 50
+    assert list(cfg.evaluation.named_retrieval_sets.moses50)[:3] == ["am", "are", "bad"]
+
+
+def test_named_retrieval_set_resolution_handles_curly_apostrophe():
+    word_to_idx = {"is": 0, "it's": 1, "on": 2}
+    resolved = _build_named_retrieval_sets(
+        {"datafit50": ["is", "it’s", "missing", "on"]},
+        word_to_idx,
+    )
+    assert resolved == {"datafit50": [0, 1, 2]}

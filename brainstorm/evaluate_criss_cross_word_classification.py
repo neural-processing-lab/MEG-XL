@@ -173,6 +173,69 @@ def _create_eval_subset_loaders(
     return subset_loaders
 
 
+def _retrieval_word_candidates(word: str) -> List[str]:
+    normalized = str(word).strip().lower()
+    candidates = [normalized]
+    if "’" in normalized:
+        candidates.append(normalized.replace("’", "'"))
+    if "'" in normalized:
+        candidates.append(normalized.replace("'", "’"))
+    return list(dict.fromkeys(candidates))
+
+
+def _build_named_retrieval_sets(
+    named_retrieval_sets: Optional[Dict[str, Any]],
+    word_to_idx: Dict[str, int],
+) -> Dict[str, List[int]]:
+    """Resolve config word lists to vocab indices, preserving list order."""
+    if not named_retrieval_sets:
+        return {}
+
+    resolved = {}
+    for set_name, words in named_retrieval_sets.items():
+        indices = []
+        missing = []
+        seen_indices = set()
+
+        for word in words:
+            matched_idx = None
+            for candidate in _retrieval_word_candidates(word):
+                if candidate in word_to_idx:
+                    matched_idx = word_to_idx[candidate]
+                    break
+
+            if matched_idx is None:
+                missing.append(str(word))
+                continue
+            if matched_idx in seen_indices:
+                continue
+
+            seen_indices.add(matched_idx)
+            indices.append(matched_idx)
+
+        if missing:
+            logger.warning(
+                f"Named retrieval set '{set_name}' skipped {len(missing)} words not in vocabulary: {missing}"
+            )
+        if not indices:
+            logger.warning(f"Named retrieval set '{set_name}' has no words present in the vocabulary")
+            continue
+
+        resolved[str(set_name)] = indices
+        logger.info(f"Named retrieval set '{set_name}': {len(indices)} words resolved")
+
+    return resolved
+
+
+def _get_eval_k_values(evaluation_cfg: Any) -> List[int]:
+    k_values = evaluation_cfg.get('k_values', None)
+    if k_values is None:
+        return [int(evaluation_cfg.k)]
+    if isinstance(k_values, int):
+        return [int(k_values)]
+    return [int(k) for k in k_values]
+
+
 # ============================================================================
 # Model Components
 # ============================================================================
@@ -890,6 +953,99 @@ def compute_balanced_top_k_accuracy_with_retrieval_set(
     return balanced_accuracy
 
 
+def compute_top_k_accuracy_with_named_retrieval_set(
+    pred_embeddings: torch.Tensor,
+    true_labels: torch.Tensor,
+    vocab_embeddings: torch.Tensor,
+    retrieval_indices: List[int],
+    retrieval_name: str,
+    k: int = 10
+) -> Dict[str, Any]:
+    """Compute top-k retrieval accuracy against an arbitrary named vocab subset."""
+    retrieval_indices_for_labels = torch.tensor(retrieval_indices, dtype=torch.long, device=true_labels.device)
+    if retrieval_indices_for_labels.numel() == 0:
+        return {
+            f'top{k}_accuracy_{retrieval_name}': 0.0,
+            f'n_samples_{retrieval_name}': 0,
+            f'n_skipped_{retrieval_name}': len(true_labels),
+        }
+
+    label_matches = true_labels.unsqueeze(1) == retrieval_indices_for_labels.unsqueeze(0)
+    in_retrieval_set = label_matches.any(dim=1)
+    n_samples = in_retrieval_set.sum().item()
+    n_skipped = len(true_labels) - n_samples
+
+    if n_samples == 0:
+        return {
+            f'top{k}_accuracy_{retrieval_name}': 0.0,
+            f'n_samples_{retrieval_name}': 0,
+            f'n_skipped_{retrieval_name}': n_skipped,
+        }
+
+    filtered_pred = pred_embeddings[in_retrieval_set]
+    filtered_label_matches = label_matches[in_retrieval_set]
+    filtered_label_positions = filtered_label_matches.int().argmax(dim=1)
+    retrieval_indices_for_vocab = torch.tensor(retrieval_indices, dtype=torch.long, device=vocab_embeddings.device)
+    retrieval_embeddings = vocab_embeddings[retrieval_indices_for_vocab].to(pred_embeddings.device)
+
+    pred_norm = F.normalize(filtered_pred, p=2, dim=1)
+    retrieval_norm = F.normalize(retrieval_embeddings, p=2, dim=1)
+    similarity = torch.matmul(pred_norm, retrieval_norm.T)
+
+    actual_k = min(k, len(retrieval_indices))
+    _, top_k_indices = torch.topk(similarity, k=actual_k, dim=1)
+
+    hits = (top_k_indices == filtered_label_positions.unsqueeze(1)).any(dim=1)
+    accuracy = hits.float().mean().item()
+
+    return {
+        f'top{k}_accuracy_{retrieval_name}': accuracy,
+        f'n_samples_{retrieval_name}': n_samples,
+        f'n_skipped_{retrieval_name}': n_skipped,
+    }
+
+
+def compute_balanced_top_k_accuracy_with_named_retrieval_set(
+    pred_embeddings: torch.Tensor,
+    true_labels: torch.Tensor,
+    vocab_embeddings: torch.Tensor,
+    retrieval_indices: List[int],
+    k: int = 10
+) -> float:
+    """Compute macro-averaged top-k accuracy for an arbitrary named vocab subset."""
+    retrieval_indices_for_labels = torch.tensor(retrieval_indices, dtype=torch.long, device=true_labels.device)
+    if retrieval_indices_for_labels.numel() == 0:
+        return 0.0
+
+    label_matches = true_labels.unsqueeze(1) == retrieval_indices_for_labels.unsqueeze(0)
+    in_retrieval_set = label_matches.any(dim=1)
+    if in_retrieval_set.sum().item() == 0:
+        return 0.0
+
+    filtered_pred = pred_embeddings[in_retrieval_set]
+    filtered_labels = true_labels[in_retrieval_set]
+    retrieval_indices_for_vocab = torch.tensor(retrieval_indices, dtype=torch.long, device=vocab_embeddings.device)
+    retrieval_embeddings = vocab_embeddings[retrieval_indices_for_vocab].to(pred_embeddings.device)
+
+    pred_norm = F.normalize(filtered_pred, p=2, dim=1)
+    retrieval_norm = F.normalize(retrieval_embeddings, p=2, dim=1)
+    similarity = torch.matmul(pred_norm, retrieval_norm.T)
+
+    actual_k = min(k, len(retrieval_indices))
+    _, top_k_indices = torch.topk(similarity, k=actual_k, dim=1)
+
+    per_class_accuracies = []
+    for retrieval_position, class_idx in enumerate(retrieval_indices):
+        class_mask = filtered_labels == class_idx
+        if class_mask.sum().item() == 0:
+            continue
+        class_top_k = top_k_indices[class_mask]
+        hits = (class_top_k == retrieval_position).any(dim=1)
+        per_class_accuracies.append(hits.float().mean().item())
+
+    return sum(per_class_accuracies) / len(per_class_accuracies) if per_class_accuracies else 0.0
+
+
 def compute_balanced_top_k_accuracy(
     pred_embeddings: torch.Tensor,
     true_labels: torch.Tensor,
@@ -1065,7 +1221,9 @@ def evaluate_epoch(
     criterion: SigLipLoss,
     device: str,
     retrieval_set_sizes: List[int] = [50, 250],
-    k: int = 10
+    k: int = 10,
+    k_values: Optional[List[int]] = None,
+    named_retrieval_sets: Optional[Dict[str, List[int]]] = None,
 ) -> Dict[str, float]:
     """
     Evaluate on validation or test set.
@@ -1082,11 +1240,15 @@ def evaluate_epoch(
         criterion: SigLIP loss function
         device: Device to run on
         retrieval_set_sizes: List of retrieval set sizes to evaluate (e.g., [50, 250])
-        k: K value for top-k accuracy (default: 10)
+        k: K value for top-k accuracy when k_values is not provided
+        k_values: Optional list of K values to compute simultaneously
+        named_retrieval_sets: Optional named vocab-index retrieval sets
 
     Returns:
         metrics: Dictionary of evaluation metrics
     """
+    named_retrieval_sets = named_retrieval_sets or {}
+    k_values = [int(value) for value in (k_values if k_values is not None else [k])]
     criss_cross_model.eval()
     word_mlp.eval()
 
@@ -1114,11 +1276,17 @@ def evaluate_epoch(
     if len(all_losses) == 0:
         metrics = {'loss': 0.0}
         total_samples = 0
-        for retrieval_size in retrieval_set_sizes:
-            metrics[f'top{k}_accuracy_retrieval{retrieval_size}'] = 0.0
-            metrics[f'n_samples_retrieval{retrieval_size}'] = 0
-            metrics[f'n_skipped_retrieval{retrieval_size}'] = total_samples
-            metrics[f'balanced_top{k}_accuracy_retrieval{retrieval_size}'] = 0.0
+        for eval_k in k_values:
+            for retrieval_size in retrieval_set_sizes:
+                metrics[f'top{eval_k}_accuracy_retrieval{retrieval_size}'] = 0.0
+                metrics[f'n_samples_retrieval{retrieval_size}'] = 0
+                metrics[f'n_skipped_retrieval{retrieval_size}'] = total_samples
+                metrics[f'balanced_top{eval_k}_accuracy_retrieval{retrieval_size}'] = 0.0
+            for retrieval_name in named_retrieval_sets:
+                metrics[f'top{eval_k}_accuracy_{retrieval_name}'] = 0.0
+                metrics[f'n_samples_{retrieval_name}'] = 0
+                metrics[f'n_skipped_{retrieval_name}'] = total_samples
+                metrics[f'balanced_top{eval_k}_accuracy_{retrieval_name}'] = 0.0
         metrics.update({
             'mean_cosine_similarity': 0.0,
             'std_cosine_similarity': 0.0,
@@ -1138,21 +1306,35 @@ def evaluate_epoch(
     metrics = {}
     metrics['loss'] = sum(all_losses) / len(all_losses)
 
-    # Compute top-k accuracy for each retrieval set size
-    for retrieval_size in retrieval_set_sizes:
-        # Top-k accuracy with retrieval set
-        retrieval_metrics = compute_top_k_accuracy_with_retrieval_set(
-            all_pred_embeddings, all_labels, vocab_embeddings,
-            retrieval_set_size=retrieval_size, k=k
-        )
-        metrics.update(retrieval_metrics)
+    # Compute top-k accuracy for each requested K and retrieval set.
+    for eval_k in k_values:
+        for retrieval_size in retrieval_set_sizes:
+            retrieval_metrics = compute_top_k_accuracy_with_retrieval_set(
+                all_pred_embeddings, all_labels, vocab_embeddings,
+                retrieval_set_size=retrieval_size, k=eval_k
+            )
+            metrics.update(retrieval_metrics)
 
-        # Balanced top-k accuracy with retrieval set
-        balanced_acc = compute_balanced_top_k_accuracy_with_retrieval_set(
-            all_pred_embeddings, all_labels, vocab_embeddings,
-            retrieval_set_size=retrieval_size, k=k
-        )
-        metrics[f'balanced_top{k}_accuracy_retrieval{retrieval_size}'] = balanced_acc
+            balanced_acc = compute_balanced_top_k_accuracy_with_retrieval_set(
+                all_pred_embeddings, all_labels, vocab_embeddings,
+                retrieval_set_size=retrieval_size, k=eval_k
+            )
+            metrics[f'balanced_top{eval_k}_accuracy_retrieval{retrieval_size}'] = balanced_acc
+
+        for retrieval_name, retrieval_indices in named_retrieval_sets.items():
+            named_metrics = compute_top_k_accuracy_with_named_retrieval_set(
+                all_pred_embeddings, all_labels, vocab_embeddings,
+                retrieval_indices=retrieval_indices,
+                retrieval_name=retrieval_name,
+                k=eval_k,
+            )
+            metrics.update(named_metrics)
+            balanced_acc = compute_balanced_top_k_accuracy_with_named_retrieval_set(
+                all_pred_embeddings, all_labels, vocab_embeddings,
+                retrieval_indices=retrieval_indices,
+                k=eval_k,
+            )
+            metrics[f'balanced_top{eval_k}_accuracy_{retrieval_name}'] = balanced_acc
 
     # Embedding quality (computed on all samples)
     emb_metrics = compute_embedding_metrics(all_pred_embeddings, all_target_embeddings)
@@ -1172,6 +1354,7 @@ def train_and_evaluate(
     device: str,
     val_subset_loaders: Optional[Dict[str, DataLoader]] = None,
     test_subset_loaders: Optional[Dict[str, DataLoader]] = None,
+    named_retrieval_sets: Optional[Dict[str, List[int]]] = None,
 ) -> Dict[str, float]:
     """
     Main training and evaluation loop.
@@ -1187,12 +1370,14 @@ def train_and_evaluate(
         device: Device to run on
         val_subset_loaders: Optional validation loaders for per-subset metrics
         test_subset_loaders: Optional test loaders for per-subset metrics
+        named_retrieval_sets: Optional named vocab-index retrieval sets
 
     Returns:
         test_metrics: Final test set metrics
     """
     val_subset_loaders = val_subset_loaders or {}
     test_subset_loaders = test_subset_loaders or {}
+    named_retrieval_sets = named_retrieval_sets or {}
 
     # Setup optimizer with mode-appropriate learning rates
     if cfg.model.train_from_scratch:
@@ -1266,6 +1451,8 @@ def train_and_evaluate(
 
     for epoch in range(start_epoch, cfg.training.num_epochs):
         logger.info(f"\nEpoch {epoch + 1}/{cfg.training.num_epochs}")
+        eval_k_values = _get_eval_k_values(cfg.evaluation)
+        primary_k = int(cfg.evaluation.get('primary_k', cfg.evaluation.k))
 
         # Training
         criss_cross_model.train()
@@ -1312,7 +1499,9 @@ def train_and_evaluate(
             criss_cross_model, word_mlp, val_loader,
             vocab_embeddings, criterion, device,
             retrieval_set_sizes=cfg.evaluation.retrieval_set_sizes,
-            k=cfg.evaluation.k
+            k=cfg.evaluation.k,
+            k_values=eval_k_values,
+            named_retrieval_sets=named_retrieval_sets,
         )
 
         # Also evaluate on test set to understand dynamics (but don't use for early stopping)
@@ -1320,7 +1509,9 @@ def train_and_evaluate(
             criss_cross_model, word_mlp, test_loader,
             vocab_embeddings, criterion, device,
             retrieval_set_sizes=cfg.evaluation.retrieval_set_sizes,
-            k=cfg.evaluation.k
+            k=cfg.evaluation.k,
+            k_values=eval_k_values,
+            named_retrieval_sets=named_retrieval_sets,
         )
 
         val_subset_metrics = {}
@@ -1329,7 +1520,9 @@ def train_and_evaluate(
                 criss_cross_model, word_mlp, subset_loader,
                 vocab_embeddings, criterion, device,
                 retrieval_set_sizes=cfg.evaluation.retrieval_set_sizes,
-                k=cfg.evaluation.k
+                k=cfg.evaluation.k,
+                k_values=eval_k_values,
+                named_retrieval_sets=named_retrieval_sets,
             )
 
         test_subset_metrics = {}
@@ -1338,37 +1531,55 @@ def train_and_evaluate(
                 criss_cross_model, word_mlp, subset_loader,
                 vocab_embeddings, criterion, device,
                 retrieval_set_sizes=cfg.evaluation.retrieval_set_sizes,
-                k=cfg.evaluation.k
+                k=cfg.evaluation.k,
+                k_values=eval_k_values,
+                named_retrieval_sets=named_retrieval_sets,
             )
 
         # Get primary retrieval set size for early stopping (largest in list)
         primary_retrieval_size = cfg.evaluation.retrieval_set_sizes[-1]
-        k = cfg.evaluation.k
 
         logger.info(f"  Val loss: {val_metrics['loss']:.4f}")
-        for ret_size in cfg.evaluation.retrieval_set_sizes:
-            val_acc = val_metrics.get(f'top{k}_accuracy_retrieval{ret_size}', 0)
-            val_balanced = val_metrics.get(f'balanced_top{k}_accuracy_retrieval{ret_size}', 0)
-            val_n = val_metrics.get(f'n_samples_retrieval{ret_size}', 0)
-            test_acc = test_metrics.get(f'top{k}_accuracy_retrieval{ret_size}', 0)
-            test_balanced = test_metrics.get(f'balanced_top{k}_accuracy_retrieval{ret_size}', 0)
-            logger.info(f"  [Retrieval {ret_size}] Val top-{k}: {val_acc:.4f}, balanced: {val_balanced:.4f} (n={val_n})")
-            logger.info(f"  [Retrieval {ret_size}] Test top-{k}: {test_acc:.4f}, balanced: {test_balanced:.4f}")
-            for subset_name, metrics in val_subset_metrics.items():
-                subset_acc = metrics.get(f'top{k}_accuracy_retrieval{ret_size}', 0)
-                subset_balanced = metrics.get(f'balanced_top{k}_accuracy_retrieval{ret_size}', 0)
-                subset_n = metrics.get(f'n_samples_retrieval{ret_size}', 0)
+        for eval_k in eval_k_values:
+            for ret_size in cfg.evaluation.retrieval_set_sizes:
+                val_acc = val_metrics.get(f'top{eval_k}_accuracy_retrieval{ret_size}', 0)
+                val_balanced = val_metrics.get(f'balanced_top{eval_k}_accuracy_retrieval{ret_size}', 0)
+                val_n = val_metrics.get(f'n_samples_retrieval{ret_size}', 0)
+                test_acc = test_metrics.get(f'top{eval_k}_accuracy_retrieval{ret_size}', 0)
+                test_balanced = test_metrics.get(f'balanced_top{eval_k}_accuracy_retrieval{ret_size}', 0)
+                logger.info(f"  [Retrieval {ret_size}] Val top-{eval_k}: {val_acc:.4f}, balanced: {val_balanced:.4f} (n={val_n})")
+                logger.info(f"  [Retrieval {ret_size}] Test top-{eval_k}: {test_acc:.4f}, balanced: {test_balanced:.4f}")
+                for subset_name, metrics in val_subset_metrics.items():
+                    subset_acc = metrics.get(f'top{eval_k}_accuracy_retrieval{ret_size}', 0)
+                    subset_balanced = metrics.get(f'balanced_top{eval_k}_accuracy_retrieval{ret_size}', 0)
+                    subset_n = metrics.get(f'n_samples_retrieval{ret_size}', 0)
+                    logger.info(
+                        f"  [Retrieval {ret_size}] Val/{subset_name} top-{eval_k}: "
+                        f"{subset_acc:.4f}, balanced: {subset_balanced:.4f} (n={subset_n})"
+                    )
+                for subset_name, metrics in test_subset_metrics.items():
+                    subset_acc = metrics.get(f'top{eval_k}_accuracy_retrieval{ret_size}', 0)
+                    subset_balanced = metrics.get(f'balanced_top{eval_k}_accuracy_retrieval{ret_size}', 0)
+                    subset_n = metrics.get(f'n_samples_retrieval{ret_size}', 0)
+                    logger.info(
+                        f"  [Retrieval {ret_size}] Test/{subset_name} top-{eval_k}: "
+                        f"{subset_acc:.4f}, balanced: {subset_balanced:.4f} (n={subset_n})"
+                    )
+
+            for retrieval_name in named_retrieval_sets:
+                val_acc = val_metrics.get(f'top{eval_k}_accuracy_{retrieval_name}', 0)
+                val_balanced = val_metrics.get(f'balanced_top{eval_k}_accuracy_{retrieval_name}', 0)
+                val_n = val_metrics.get(f'n_samples_{retrieval_name}', 0)
+                test_acc = test_metrics.get(f'top{eval_k}_accuracy_{retrieval_name}', 0)
+                test_balanced = test_metrics.get(f'balanced_top{eval_k}_accuracy_{retrieval_name}', 0)
+                test_n = test_metrics.get(f'n_samples_{retrieval_name}', 0)
                 logger.info(
-                    f"  [Retrieval {ret_size}] Val/{subset_name} top-{k}: "
-                    f"{subset_acc:.4f}, balanced: {subset_balanced:.4f} (n={subset_n})"
+                    f"  [{retrieval_name}] Val top-{eval_k}: {val_acc:.4f}, "
+                    f"balanced: {val_balanced:.4f} (n={val_n})"
                 )
-            for subset_name, metrics in test_subset_metrics.items():
-                subset_acc = metrics.get(f'top{k}_accuracy_retrieval{ret_size}', 0)
-                subset_balanced = metrics.get(f'balanced_top{k}_accuracy_retrieval{ret_size}', 0)
-                subset_n = metrics.get(f'n_samples_retrieval{ret_size}', 0)
                 logger.info(
-                    f"  [Retrieval {ret_size}] Test/{subset_name} top-{k}: "
-                    f"{subset_acc:.4f}, balanced: {subset_balanced:.4f} (n={subset_n})"
+                    f"  [{retrieval_name}] Test top-{eval_k}: {test_acc:.4f}, "
+                    f"balanced: {test_balanced:.4f} (n={test_n})"
                 )
 
         # Log to WandB
@@ -1397,7 +1608,7 @@ def train_and_evaluate(
         wandb.log(log_dict)
 
         # Use primary retrieval set's balanced accuracy for early stopping
-        primary_metric_key = f'balanced_top{k}_accuracy_retrieval{primary_retrieval_size}'
+        primary_metric_key = f'balanced_top{primary_k}_accuracy_retrieval{primary_retrieval_size}'
         val_primary_acc = val_metrics.get(primary_metric_key, 0)
 
         # Scheduler step
@@ -1428,8 +1639,8 @@ def train_and_evaluate(
                 'best_test_metrics_at_best_val': best_test_metrics_at_best_val,
                 'config': OmegaConf.to_container(cfg, resolve=True)
             }, checkpoint_path)
-            test_primary_acc = test_metrics.get(f'top{k}_accuracy_retrieval{primary_retrieval_size}', 0)
-            logger.info(f"  Saved best model (val balanced: {best_val_top10_acc:.4f}, test top-{k}@{primary_retrieval_size}: {test_primary_acc:.4f})")
+            test_primary_acc = test_metrics.get(f'top{primary_k}_accuracy_retrieval{primary_retrieval_size}', 0)
+            logger.info(f"  Saved best model (val balanced: {best_val_top10_acc:.4f}, test top-{primary_k}@{primary_retrieval_size}: {test_primary_acc:.4f})")
         else:
             patience_counter += 1
 
@@ -1872,6 +2083,11 @@ def main(cfg: DictConfig):
     logger.info(f"  Val: {len(val_dataset)} segments")
     logger.info(f"  Test: {len(test_dataset)} segments")
 
+    named_retrieval_sets = _build_named_retrieval_sets(
+        cfg.evaluation.get('named_retrieval_sets', None),
+        word_to_idx,
+    )
+
     # Create collate function
     collate_fn = create_word_level_collate_fn(word_to_idx)
 
@@ -1960,6 +2176,7 @@ def main(cfg: DictConfig):
         vocab_embeddings, cfg, cfg.device,
         val_subset_loaders=val_subset_loaders,
         test_subset_loaders=test_subset_loaders,
+        named_retrieval_sets=named_retrieval_sets,
     )
 
     # 8. Save the test metrics captured during training at the best validation epoch.
