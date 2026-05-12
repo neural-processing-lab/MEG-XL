@@ -56,6 +56,7 @@ from brainstorm.neuro_tokenizers.biocodec.model import BioCodecModel
 from brainstorm.data.armeni_word_aligned_dataset import ArmeniWordAlignedDataset
 from brainstorm.data.gwilliams_word_aligned_dataset import GwilliamsWordAlignedDataset
 from brainstorm.data.libribrain_word_aligned_dataset import LibriBrainWordAlignedDataset
+from brainstorm.data.libribrain100_word_aligned_dataset import LibriBrain100WordAlignedDataset
 from brainstorm.losses.contrastive import SigLipLoss
 
 logger = logging.getLogger(__name__)
@@ -96,7 +97,7 @@ def get_dataset_class(dataset_type: str):
     Get the appropriate dataset class based on dataset_type.
 
     Args:
-        dataset_type: One of "armeni", "gwilliams", or "libribrain"
+        dataset_type: One of "armeni", "gwilliams", "libribrain", or "libribrain100"
 
     Returns:
         Dataset class to instantiate
@@ -105,6 +106,7 @@ def get_dataset_class(dataset_type: str):
         "armeni": ArmeniWordAlignedDataset,
         "gwilliams": GwilliamsWordAlignedDataset,
         "libribrain": LibriBrainWordAlignedDataset,
+        "libribrain100": LibriBrain100WordAlignedDataset,
     }
 
     if dataset_type not in dataset_classes:
@@ -123,13 +125,26 @@ def get_default_max_channel_dim(dataset_type: str) -> int:
     - Armeni: 306 MEG channels (CTF system)
     - Gwilliams: 208 MEG channels (KIT/Ricoh system)
     - LibriBrain: 306 MEG channels (Elekta Neuromag system)
+    - LibriBrain100: 306 MEG channels (Elekta Neuromag system)
     """
     defaults = {
         "armeni": 306,
         "gwilliams": 208,
         "libribrain": 306,
+        "libribrain100": 306,
     }
     return defaults.get(dataset_type, 306)
+
+
+def _config_list_or_none(value: Any) -> Optional[List[Any]]:
+    """Convert Hydra scalar/list config values into a plain Python list or None."""
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return [value]
+    if hasattr(value, "__iter__"):
+        return list(value)
+    return [value]
 
 
 # ============================================================================
@@ -1417,7 +1432,88 @@ def main(cfg: DictConfig):
     logger.info(f"Dataset class: {DatasetClass.__name__}")
     logger.info(f"Max channel dim: {max_channel_dim}")
 
-    if cfg.data.get('use_hashed_split', False):
+    tasks = _config_list_or_none(cfg.data.get('tasks', None))
+    split_strategy = cfg.data.get('split_strategy', None)
+
+    if split_strategy == "libribrain100":
+        logger.info("Using LibriBrain100 fixed split strategy...")
+
+        common_dataset_kwargs = dict(
+            data_root=cfg.data.root,
+            subjects=_config_list_or_none(cfg.data.get('subjects', None)),
+            sessions=_config_list_or_none(cfg.data.get('sessions', None)),
+            tasks=tasks,
+            segment_length=cfg.data.segment_length,
+            subsegment_duration=cfg.data.subsegment_duration,
+            words_per_segment=cfg.data.words_per_segment,
+            window_onset_offset=cfg.data.window_onset_offset,
+            cache_dir=cfg.data.cache_dir,
+            l_freq=cfg.data.l_freq,
+            h_freq=cfg.data.h_freq,
+            target_sfreq=cfg.data.target_sfreq,
+            max_channel_dim=max_channel_dim,
+            include_competition_serialised=cfg.data.get('include_competition_serialised', True),
+        )
+
+        train_dataset_full = DatasetClass(
+            split="train",
+            allow_incomplete_segments=False,
+            **common_dataset_kwargs,
+        )
+
+        total_size = len(train_dataset_full)
+        sample_size = int(cfg.data.train_pct * total_size)
+        remaining_size = total_size - sample_size
+
+        logger.info(f"\nSubsampling LibriBrain100 training data to {cfg.data.train_pct*100}%...")
+        logger.info(f"  Original: {total_size} segments")
+        logger.info(f"  Subsampled: {sample_size} segments")
+
+        train_dataset, _ = random_split(
+            train_dataset_full,
+            [sample_size, remaining_size],
+            generator=torch.Generator().manual_seed(cfg.seed)
+        )
+
+        val_dataset = DatasetClass(
+            split="val",
+            allow_incomplete_segments=True,
+            **common_dataset_kwargs,
+        )
+
+        test_dataset = DatasetClass(
+            split="test",
+            allow_incomplete_segments=True,
+            **common_dataset_kwargs,
+        )
+
+        logger.info("\nBuilding vocabulary from LibriBrain100 train/val/test datasets (ALL words)...")
+        word_counter = Counter()
+        for dataset in [train_dataset_full, val_dataset, test_dataset]:
+            for word_groups in dataset.word_groups:
+                for word_group in word_groups:
+                    words = [w['word'] for w in word_group]
+                    word_counter.update(words)
+
+        vocab = [word for word, _ in word_counter.most_common()]
+        if len(vocab) == 0:
+            raise ValueError("LibriBrain100 vocabulary is empty; check split rules and data paths")
+
+        logger.info(f"  Total unique words (vocabulary size): {len(vocab)}")
+        logger.info(f"  Most frequent word: '{vocab[0]}' ({word_counter[vocab[0]]} occurrences)")
+        logger.info(f"  Least frequent word: '{vocab[-1]}' ({word_counter[vocab[-1]]} occurrences)")
+
+        word_to_idx = {word: idx for idx, word in enumerate(vocab)}
+        vocab_embeddings = generate_word_embeddings(
+            vocab,
+            vocab_size=len(vocab),
+            layer=cfg.t5.layer,
+            cache_dir=cfg.t5.cache_dir,
+            device=cfg.device,
+            dataset_type=dataset_type
+        )
+
+    elif cfg.data.get('use_hashed_split', False):
         logger.info("Using hashed sentence-based split...")
 
         # Create single dataset with ALL sessions
@@ -1425,7 +1521,7 @@ def main(cfg: DictConfig):
             data_root=cfg.data.root,
             subjects=cfg.data.subjects,
             sessions=cfg.data.all_sessions,  # Load all sessions
-            tasks=list(cfg.data.tasks) if cfg.data.tasks is not None and hasattr(cfg.data.tasks, '__iter__') and not isinstance(cfg.data.tasks, str) else ([cfg.data.tasks] if cfg.data.tasks is not None else None),
+            tasks=tasks,
             segment_length=cfg.data.segment_length,
             subsegment_duration=cfg.data.subsegment_duration,
             words_per_segment=cfg.data.words_per_segment,
@@ -1573,7 +1669,7 @@ def main(cfg: DictConfig):
             data_root=cfg.data.root,
             subjects=cfg.data.subjects,
             sessions=cfg.data.train_sessions,
-            tasks=list(cfg.data.tasks) if cfg.data.tasks is not None and hasattr(cfg.data.tasks, '__iter__') and not isinstance(cfg.data.tasks, str) else ([cfg.data.tasks] if cfg.data.tasks is not None else None),
+            tasks=tasks,
             segment_length=cfg.data.segment_length,
             subsegment_duration=cfg.data.subsegment_duration,
             words_per_segment=cfg.data.words_per_segment,
@@ -1607,7 +1703,7 @@ def main(cfg: DictConfig):
             data_root=cfg.data.root,
             subjects=cfg.data.subjects,
             sessions=cfg.data.val_sessions,
-            tasks=list(cfg.data.tasks) if cfg.data.tasks is not None and hasattr(cfg.data.tasks, '__iter__') and not isinstance(cfg.data.tasks, str) else ([cfg.data.tasks] if cfg.data.tasks is not None else None),
+            tasks=tasks,
             segment_length=cfg.data.segment_length,
             subsegment_duration=cfg.data.subsegment_duration,
             words_per_segment=cfg.data.words_per_segment,
@@ -1624,7 +1720,7 @@ def main(cfg: DictConfig):
             data_root=cfg.data.root,
             subjects=cfg.data.subjects,
             sessions=cfg.data.test_sessions,
-            tasks=list(cfg.data.tasks) if cfg.data.tasks is not None and hasattr(cfg.data.tasks, '__iter__') and not isinstance(cfg.data.tasks, str) else ([cfg.data.tasks] if cfg.data.tasks is not None else None),
+            tasks=tasks,
             segment_length=cfg.data.segment_length,
             subsegment_duration=cfg.data.subsegment_duration,
             words_per_segment=cfg.data.words_per_segment,

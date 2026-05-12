@@ -1,0 +1,80 @@
+# CrissCross Word Classification Evaluation Configuration - LibriBrain100 Dataset
+
+model:
+  train_from_scratch: false
+  use_gradient_checkpointing: false
+  criss_cross_checkpoint: "./checkpoints/criss-cross-multi-dataset-pretrain-50Hz/c5z56xy8/last.ckpt"
+  tokenizer_checkpoint: "./brainstorm/neuro_tokenizers/biocodec_ckpt.pt"
+
+  word_mlp:
+    hidden_dim: 2048
+    embed_dim: 1024
+    dropout: 0.1
+
+data:
+  dataset_type: "libribrain100"
+  split_strategy: "libribrain100"
+
+  root:
+    - "/data/engs-asr/LibriBrain_hf"
+    - "/data/engs-asr/LibriBrain2_hf"
+  cache_dir: "./data/cache"
+
+  max_channel_dim: 306
+  subjects: null
+
+  train_pct: 1.0
+  include_competition_serialised: true
+  tasks: null
+
+  l_freq: 0.1
+  h_freq: 40.0
+  target_sfreq: 50.0
+
+  segment_length: 150.0
+  subsegment_duration: 3.0
+  words_per_segment: 50
+  window_onset_offset: -0.5
+
+t5:
+  model_name: "t5-large"
+  layer: 12
+  cache_dir: "./embeddings_cache"
+
+training:
+  batch_size: 1
+  num_epochs: 50
+  use_torch_compile: false
+  resume_checkpoint: null
+
+  criss_cross_lr: 1.0e-5
+  word_mlp_lr: 1.0e-3
+  from_scratch_lr: 1.0e-4
+
+  weight_decay: 1.0e-4
+  gradient_clip_val: 1.0
+
+  patience: 10
+  min_delta: 0.001
+
+  num_workers: 6
+  pin_memory: true
+
+loss:
+  norm_kind: "xy"
+  temperature: true
+  bias: true
+  reduction: "sum"
+
+evaluation:
+  retrieval_set_sizes: [50, 250]
+  k: 10
+
+logging:
+  wandb_project: "brainstorm-eval"
+  experiment_name: "criss-cross-word-classification-libribrain100-50Hz"
+  log_every_n_steps: 10
+  save_dir: "./logs/word_classification_libribrain100"
+
+device: "cuda"
+seed: 42

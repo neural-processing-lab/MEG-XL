@@ -7,6 +7,7 @@ from .gwilliams_dataset import GwilliamsMEGDataset
 from .camcan_dataset import CamCANMEGDataset
 from .libribrain_dataset import LibriBrainMEGDataset
 from .libribrain_word_aligned_dataset import LibriBrainWordAlignedDataset
+from .libribrain100_word_aligned_dataset import LibriBrain100WordAlignedDataset
 from .gwilliams_word_aligned_dataset import GwilliamsWordAlignedDataset
 from .smn4lang_dataset import SMN4LangMEGDataset
 from .samplers import RecordingShuffleSampler
@@ -22,6 +23,7 @@ __all__ = [
     "CamCANMEGDataset",
     "LibriBrainMEGDataset",
     "LibriBrainWordAlignedDataset",
+    "LibriBrain100WordAlignedDataset",
     "GwilliamsWordAlignedDataset",
     "SMN4LangMEGDataset",
     "RecordingShuffleSampler",
