@@ -528,17 +528,29 @@ class LibriBrain100WordAlignedDataset(Dataset):
         events_df = pd.read_csv(events_path, sep="\t")
         events_df = events_df[events_df["kind"] == "word"].copy()
         if events_df.empty:
-            return pd.DataFrame(columns=["onset", "value"])
+            return pd.DataFrame(columns=["onset", "value", "sentenceidx", "wordidx"])
 
         split_mask = events_df.apply(lambda row: self._event_belongs_to_split(row, rec), axis=1)
         events_df = events_df[split_mask].copy()
         if events_df.empty:
-            return pd.DataFrame(columns=["onset", "value"])
+            return pd.DataFrame(columns=["onset", "value", "sentenceidx", "wordidx"])
 
         events_df = events_df.rename(columns={"timemeg": "onset", "segment": "value"})
         events_df = events_df[events_df["value"].notna()]
         events_df = events_df.sort_values("onset").reset_index(drop=True)
-        return events_df[["onset", "value"]]
+        for column in ["sentenceidx", "wordidx"]:
+            if column not in events_df.columns:
+                events_df[column] = -1
+        return events_df[["onset", "value", "sentenceidx", "wordidx"]]
+
+    @staticmethod
+    def _event_index_value(value: Any) -> int:
+        if pd.isna(value):
+            return -1
+        try:
+            return int(float(value))
+        except (TypeError, ValueError):
+            return -1
 
     def _build_word_groups(self, events_df: pd.DataFrame, recording_duration: float) -> List[List[Dict[str, Any]]]:
         word_groups: List[List[Dict[str, Any]]] = []
@@ -563,6 +575,8 @@ class LibriBrain100WordAlignedDataset(Dataset):
                 "window_start": window_start,
                 "window_end": window_end,
                 "subsegment_idx": len(current_group),
+                "sentenceidx": self._event_index_value(row.get("sentenceidx", -1)),
+                "wordidx": self._event_index_value(row.get("wordidx", -1)),
             })
 
             if len(current_group) == self.words_per_segment:
@@ -677,6 +691,8 @@ class LibriBrain100WordAlignedDataset(Dataset):
             "sensor_types": torch.from_numpy(sensor_types).int(),
             "sensor_mask": torch.from_numpy(sensor_mask).float(),
             "words": [w["word"] for w in word_group],
+            "wordidxs": [w.get("wordidx", -1) for w in word_group],
+            "sentenceidxs": [w.get("sentenceidx", -1) for w in word_group],
             "subsegment_boundaries": subsegment_boundaries,
             "recording_idx": rec_idx,
             "segment_idx": group_idx,

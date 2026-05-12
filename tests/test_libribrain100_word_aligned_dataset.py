@@ -6,6 +6,7 @@ import h5py
 import numpy as np
 import pandas as pd
 import pytest
+import torch
 from omegaconf import OmegaConf
 
 from brainstorm.data import LibriBrain100WordAlignedDataset
@@ -15,7 +16,11 @@ from brainstorm.data.libribrain100_word_aligned_dataset import (
 )
 from brainstorm.evaluate_criss_cross_word_classification import (
     _build_named_retrieval_sets,
+    create_word_level_collate_fn,
     get_dataset_class,
+    save_target_embeddings_npz,
+    save_val_test_word_counts_npz,
+    write_prediction_embeddings_npz,
 )
 
 
@@ -131,6 +136,31 @@ def test_sherlock_fixed_splits_and_competition_discovery(tmp_path):
     assert set(test.get_split_subset_indices()) == {"Sherlock1"}
 
 
+def test_libribrain100_word_metadata_survives_sample_and_collate(tmp_path):
+    root = tmp_path / "LibriBrain2_hf"
+    _write_sensor_json(root)
+    _write_recording(root, "Sherlock1", "sub-1", "ses-11", [("segments/", "val_sherlock1")])
+
+    val = _dataset(root, "val", tasks=["Sherlock1"])
+    sample = val[0]
+    assert sample["words"] == ["val_sherlock1"]
+    assert sample["wordidxs"] == [0]
+    assert sample["sentenceidxs"] == [0]
+
+    collate_fn = create_word_level_collate_fn({"val_sherlock1": 7})
+    batch = collate_fn([sample])
+    assert batch["word_labels"].tolist() == [7]
+    assert batch["word_metadata"] == [{
+        "task": "Sherlock1",
+        "subject": "sub-1",
+        "session": "ses-11",
+        "target_word": "val_sherlock1",
+        "wordidx": 0,
+        "sentenceidx": 0,
+        "word_label": 7,
+    }]
+
+
 def test_themoth_and_mocha_timit_splits(tmp_path):
     root = tmp_path / "LibriBrain2_hf"
     _write_sensor_json(root)
@@ -240,3 +270,64 @@ def test_named_retrieval_set_resolution_handles_curly_apostrophe():
         word_to_idx,
     )
     assert resolved == {"datafit50": [0, 1, 2]}
+
+
+def test_artifact_npz_writers(tmp_path):
+    save_target_embeddings_npz(
+        tmp_path,
+        ["alpha", "beta"],
+        torch.tensor([[1.0, 2.0], [3.0, 4.0]]),
+    )
+    target_npz = np.load(tmp_path / "target_embeddings.npz")
+    assert target_npz["words"].tolist() == ["alpha", "beta"]
+    assert target_npz["target_embeddings"].shape == (2, 2)
+
+    write_prediction_embeddings_npz(
+        tmp_path / "best_val_predictions.npz",
+        [{
+            "task": "TIMIT",
+            "subject": "sub-0",
+            "session": "ses-1",
+            "target_word": "hello",
+            "wordidx": 3,
+            "sentenceidx": 2,
+            "word_label": 9,
+        }],
+        np.ones((1, 4), dtype=np.float32),
+    )
+    prediction_npz = np.load(tmp_path / "best_val_predictions.npz")
+    assert prediction_npz["target_word"].tolist() == ["hello"]
+    assert prediction_npz["wordidx"].tolist() == [3]
+    assert prediction_npz["sentenceidx"].tolist() == [2]
+    assert prediction_npz["word_label"].tolist() == [9]
+    assert prediction_npz["predicted_embeddings"].shape == (1, 4)
+
+
+def test_val_test_word_count_artifact_by_subset(tmp_path):
+    root = tmp_path / "LibriBrain2_hf"
+    _write_sensor_json(root)
+    _write_recording(
+        root,
+        "Sherlock1",
+        "sub-1",
+        "ses-11",
+        [("segments/", "repeat"), ("segments/", "repeat")],
+    )
+    _write_recording(root, "TheMoth", "sub-0", "ses-30", [("stimuli/c.wav", "moth_test")])
+
+    val = _dataset(root, "val", tasks=["Sherlock1", "TheMoth"])
+    test = _dataset(root, "test", tasks=["Sherlock1", "TheMoth"])
+    save_val_test_word_counts_npz(tmp_path, val, test)
+
+    counts_npz = np.load(tmp_path / "val_test_word_counts.npz")
+    rows = {
+        (split, subset, word): int(count)
+        for split, subset, word, count in zip(
+            counts_npz["split"],
+            counts_npz["subset"],
+            counts_npz["word"],
+            counts_npz["count"],
+        )
+    }
+    assert rows[("val", "Sherlock1", "repeat")] == 2
+    assert rows[("test", "TheMoth", "moth_test")] == 1

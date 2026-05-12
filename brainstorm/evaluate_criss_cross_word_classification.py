@@ -50,6 +50,7 @@ from transformers import T5EncoderModel, T5Tokenizer
 import wandb
 from tqdm import tqdm
 import pandas as pd
+import numpy as np
 
 from brainstorm.models.criss_cross_transformer import CrissCrossTransformerModule
 from brainstorm.neuro_tokenizers.biocodec.model import BioCodecModel
@@ -595,27 +596,46 @@ def create_word_level_collate_fn(word_to_idx: Dict[str, int]):
         # Extract word labels and subsegment info
         word_labels = []
         subsegment_info = []
+        word_metadata = []
 
         for batch_idx, sample in enumerate(batch):
-            for subseg_idx, (word, boundary) in enumerate(zip(sample['words'], sample['subsegment_boundaries'])):
+            wordidxs = sample.get('wordidxs', [-1] * len(sample['words']))
+            sentenceidxs = sample.get('sentenceidxs', [-1] * len(sample['words']))
+            for subseg_idx, (word, boundary, wordidx, sentenceidx) in enumerate(zip(
+                sample['words'],
+                sample['subsegment_boundaries'],
+                wordidxs,
+                sentenceidxs,
+            )):
                 # Include all words - no OOV filtering since vocab contains all words
                 if word not in word_to_idx:
                     # This should never happen if vocab is built correctly
                     logger.warning(f"Word '{word}' not in vocabulary - skipping")
                     continue
 
-                word_labels.append(word_to_idx[word])
+                word_label = word_to_idx[word]
+                word_labels.append(word_label)
                 subsegment_info.append({
                     'batch_idx': batch_idx,
                     'subseg_idx': subseg_idx,
                     'start_sample': boundary['start_sample'],
                     'end_sample': boundary['end_sample']
                 })
+                word_metadata.append({
+                    'task': sample.get('task', ''),
+                    'subject': sample.get('subject', ''),
+                    'session': sample.get('session', ''),
+                    'target_word': word,
+                    'wordidx': int(wordidx) if wordidx is not None else -1,
+                    'sentenceidx': int(sentenceidx) if sentenceidx is not None else -1,
+                    'word_label': int(word_label),
+                })
 
         return {
             'meg': meg,
             'word_labels': torch.tensor(word_labels, dtype=torch.long),
             'subsegment_info': subsegment_info,
+            'word_metadata': word_metadata,
             'sensor_xyzdir': sensor_xyzdir,
             'sensor_types': sensor_types,
             'sensor_mask': sensor_mask
@@ -1343,6 +1363,123 @@ def evaluate_epoch(
     return metrics
 
 
+def _subset_name_for_dataset_recording(dataset: Any, rec_idx: int) -> str:
+    if hasattr(dataset, "_subset_name_for_recording") and hasattr(dataset, "recordings"):
+        return dataset._subset_name_for_recording(dataset.recordings[rec_idx])
+    if hasattr(dataset, "recordings"):
+        return str(dataset.recordings[rec_idx].get("task", "unknown"))
+    return "unknown"
+
+
+def _iter_dataset_word_metadata(dataset: Any, split_name: str):
+    if not hasattr(dataset, "word_groups") or not hasattr(dataset, "recordings"):
+        return
+
+    for rec_idx, groups in enumerate(dataset.word_groups):
+        rec = dataset.recordings[rec_idx]
+        subset_name = _subset_name_for_dataset_recording(dataset, rec_idx)
+        for group in groups:
+            for word_info in group:
+                yield {
+                    "split": split_name,
+                    "subset": subset_name,
+                    "task": rec.get("task", ""),
+                    "subject": rec.get("subject", ""),
+                    "session": rec.get("session", ""),
+                    "target_word": word_info.get("word", ""),
+                    "wordidx": int(word_info.get("wordidx", -1)),
+                    "sentenceidx": int(word_info.get("sentenceidx", -1)),
+                }
+
+
+def save_target_embeddings_npz(save_dir: Path, vocab: List[str], vocab_embeddings: torch.Tensor) -> None:
+    output_path = save_dir / "target_embeddings.npz"
+    np.savez(
+        output_path,
+        words=np.asarray(vocab, dtype=str),
+        target_embeddings=vocab_embeddings.detach().cpu().numpy().astype(np.float32),
+    )
+    logger.info(f"Saved target embeddings artifact: {output_path}")
+
+
+def save_val_test_word_counts_npz(save_dir: Path, val_dataset: Any, test_dataset: Any) -> None:
+    counts = Counter()
+    for row in _iter_dataset_word_metadata(val_dataset, "val") or []:
+        counts[(row["split"], row["subset"], row["target_word"])] += 1
+    for row in _iter_dataset_word_metadata(test_dataset, "test") or []:
+        counts[(row["split"], row["subset"], row["target_word"])] += 1
+
+    rows = sorted(counts.items(), key=lambda item: item[0])
+    output_path = save_dir / "val_test_word_counts.npz"
+    np.savez(
+        output_path,
+        split=np.asarray([key[0] for key, _ in rows], dtype=str),
+        subset=np.asarray([key[1] for key, _ in rows], dtype=str),
+        word=np.asarray([key[2] for key, _ in rows], dtype=str),
+        count=np.asarray([count for _, count in rows], dtype=np.int64),
+    )
+    logger.info(f"Saved val/test word-count artifact: {output_path}")
+
+
+def write_prediction_embeddings_npz(
+    output_path: Path,
+    metadata_rows: List[Dict[str, Any]],
+    predicted_embeddings: np.ndarray,
+) -> None:
+    if predicted_embeddings.shape[0] != len(metadata_rows):
+        raise ValueError(
+            f"Prediction artifact row mismatch: {predicted_embeddings.shape[0]} embeddings "
+            f"for {len(metadata_rows)} metadata rows"
+        )
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez(
+        output_path,
+        task=np.asarray([row.get('task', '') for row in metadata_rows], dtype=str),
+        subject=np.asarray([row.get('subject', '') for row in metadata_rows], dtype=str),
+        session=np.asarray([row.get('session', '') for row in metadata_rows], dtype=str),
+        target_word=np.asarray([row.get('target_word', '') for row in metadata_rows], dtype=str),
+        wordidx=np.asarray([row.get('wordidx', -1) for row in metadata_rows], dtype=np.int64),
+        sentenceidx=np.asarray([row.get('sentenceidx', -1) for row in metadata_rows], dtype=np.int64),
+        word_label=np.asarray([row.get('word_label', -1) for row in metadata_rows], dtype=np.int64),
+        predicted_embeddings=predicted_embeddings.astype(np.float32, copy=False),
+    )
+
+
+def save_prediction_embeddings_npz(
+    output_path: Path,
+    criss_cross_model: CrissCrossTransformerModule,
+    word_mlp: CrissCrossWordEmbeddingExtractor,
+    dataloader: DataLoader,
+    vocab_embeddings: torch.Tensor,
+    criterion: SigLipLoss,
+    device: str,
+) -> None:
+    criss_cross_model.eval()
+    word_mlp.eval()
+
+    embeddings = []
+    metadata_rows = []
+
+    with torch.no_grad():
+        for batch in tqdm(dataloader, desc=f"Exporting {output_path.name}"):
+            if len(batch['word_labels']) == 0:
+                continue
+            _loss, pred_embs, _target_embs = training_step(
+                batch, criss_cross_model, word_mlp,
+                vocab_embeddings, criterion, device
+            )
+            embeddings.append(pred_embs.detach().cpu())
+            metadata_rows.extend(batch.get('word_metadata', []))
+
+    if embeddings:
+        predicted_embeddings = torch.cat(embeddings, dim=0).numpy().astype(np.float32)
+    else:
+        predicted_embeddings = np.empty((0, 0), dtype=np.float32)
+
+    write_prediction_embeddings_npz(output_path, metadata_rows, predicted_embeddings)
+    logger.info(f"Saved prediction embeddings artifact: {output_path}")
+
+
 def train_and_evaluate(
     criss_cross_model: CrissCrossTransformerModule,
     word_mlp: CrissCrossWordEmbeddingExtractor,
@@ -1639,6 +1776,17 @@ def train_and_evaluate(
                 'best_test_metrics_at_best_val': best_test_metrics_at_best_val,
                 'config': OmegaConf.to_container(cfg, resolve=True)
             }, checkpoint_path)
+            save_dir = Path(cfg.logging.save_dir)
+            save_prediction_embeddings_npz(
+                save_dir / "best_val_predictions.npz",
+                criss_cross_model, word_mlp, val_loader,
+                vocab_embeddings, criterion, device
+            )
+            save_prediction_embeddings_npz(
+                save_dir / "best_test_predictions.npz",
+                criss_cross_model, word_mlp, test_loader,
+                vocab_embeddings, criterion, device
+            )
             test_primary_acc = test_metrics.get(f'top{primary_k}_accuracy_retrieval{primary_retrieval_size}', 0)
             logger.info(f"  Saved best model (val balanced: {best_val_top10_acc:.4f}, test top-{primary_k}@{primary_retrieval_size}: {test_primary_acc:.4f})")
         else:
@@ -2087,6 +2235,8 @@ def main(cfg: DictConfig):
         cfg.evaluation.get('named_retrieval_sets', None),
         word_to_idx,
     )
+    save_target_embeddings_npz(save_dir, vocab, vocab_embeddings)
+    save_val_test_word_counts_npz(save_dir, val_dataset, test_dataset)
 
     # Create collate function
     collate_fn = create_word_level_collate_fn(word_to_idx)
