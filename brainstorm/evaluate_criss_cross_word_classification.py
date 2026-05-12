@@ -1341,52 +1341,11 @@ def train_and_evaluate(
             logger.info(f"Early stopping at epoch {epoch + 1}")
             break
 
-    # Load best model and test
-    logger.info("\nLoading best model for final evaluation...")
-    checkpoint_path = Path(cfg.logging.save_dir) / 'checkpoint_best.pt'
-    checkpoint = torch.load(checkpoint_path, map_location=device)
-    _load_model_state_dict(criss_cross_model, checkpoint['criss_cross_state_dict'])
-    word_mlp.load_state_dict(checkpoint['word_mlp_state_dict'])
-
-    # Get test metrics from when checkpoint was saved (in-memory evaluation)
-    test_metrics_at_best_val = checkpoint.get('test_metrics_at_best_val', {})
-
-    # Evaluate again after loading (to detect save/load issues)
-    test_metrics_after_load = evaluate_epoch(
-        criss_cross_model, word_mlp, test_loader,
-        vocab_embeddings, criterion, device,
-        retrieval_set_sizes=cfg.evaluation.retrieval_set_sizes,
-        k=cfg.evaluation.k
+    logger.info(
+        "\nTraining complete. Skipping end-of-training test evaluation; "
+        "test metrics were logged during validation epochs."
     )
-
-    logger.info("\n=== Final Test Results Comparison ===")
-    logger.info("Test metrics at best val epoch (in-memory):")
-    for metric_k, v in test_metrics_at_best_val.items():
-        logger.info(f"  {metric_k}: {v:.4f}")
-
-    logger.info("\nTest metrics after checkpoint load:")
-    for metric_k, v in test_metrics_after_load.items():
-        logger.info(f"  {metric_k}: {v:.4f}")
-
-    # Check for discrepancy using primary retrieval set (largest)
-    primary_retrieval_size = cfg.evaluation.retrieval_set_sizes[-1]
-    eval_k = cfg.evaluation.k
-    if test_metrics_at_best_val:
-        primary_key = f'top{eval_k}_accuracy_retrieval{primary_retrieval_size}'
-        in_mem_acc = test_metrics_at_best_val.get(primary_key, 0)
-        loaded_acc = test_metrics_after_load.get(primary_key, 0)
-        diff = abs(in_mem_acc - loaded_acc)
-        if diff > 0.01:
-            logger.warning(f"\n⚠️  Discrepancy detected! In-memory: {in_mem_acc:.4f}, After load: {loaded_acc:.4f}, Diff: {diff:.4f}")
-        else:
-            logger.info(f"\n✓ No significant discrepancy (diff: {diff:.4f})")
-
-    wandb.log({
-        **{f'test_in_memory/{k}': v for k, v in test_metrics_at_best_val.items()},
-        **{f'test_after_load/{k}': v for k, v in test_metrics_after_load.items()}
-    })
-
-    return test_metrics_after_load
+    return best_test_metrics_at_best_val
 
 
 # ============================================================================
@@ -1772,10 +1731,10 @@ def main(cfg: DictConfig):
         vocab_embeddings, cfg, cfg.device
     )
 
-    # 8. Save final results
+    # 8. Save the test metrics captured during training at the best validation epoch.
     results_path = save_dir / 'final_results.txt'
     with open(results_path, 'w') as f:
-        f.write("CrissCross Word Classification - Final Test Results\n")
+        f.write("CrissCross Word Classification - Test Results at Best Validation Epoch\n")
         f.write("=" * 60 + "\n\n")
         for k, v in test_metrics.items():
             f.write(f"{k}: {v:.4f}\n")
