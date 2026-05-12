@@ -415,6 +415,27 @@ class LibriBrain100WordAlignedDataset(Dataset):
 
         return self.split == "train"
 
+    @staticmethod
+    def _subset_name_for_recording(rec: Dict[str, Any]) -> str:
+        task = rec["task"]
+        if task.startswith("Sherlock"):
+            return "Sherlock1" if task == "Sherlock1" else "Sherlock"
+        if task == "TheMoth":
+            return "TheMoth"
+        if task == "TIMIT":
+            return "TIMIT"
+        if task == "MOCHATIMIT":
+            return "MOCHATIMIT"
+        return task
+
+    def get_split_subset_indices(self) -> Dict[str, List[int]]:
+        """Return global segment indices grouped by LibriBrain100 evaluation subset."""
+        subset_indices: Dict[str, List[int]] = {}
+        for global_idx, (rec_idx, _group_idx) in enumerate(self.segment_index):
+            subset_name = self._subset_name_for_recording(self.recordings[rec_idx])
+            subset_indices.setdefault(subset_name, []).append(global_idx)
+        return subset_indices
+
     def _needs_reprocessing(self, h5_file: h5py.File) -> bool:
         existing_sfreq = h5_file.attrs.get("sample_frequency", h5_file.attrs.get("sample_freq", 250.0))
         existing_l_freq = h5_file.attrs.get("highpass_cutoff", h5_file.attrs.get("preproc_l_freq", 0.1))

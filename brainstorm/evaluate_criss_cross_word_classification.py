@@ -147,6 +147,32 @@ def _config_list_or_none(value: Any) -> Optional[List[Any]]:
     return [value]
 
 
+def _create_eval_subset_loaders(
+    dataset,
+    batch_size: int,
+    num_workers: int,
+    pin_memory: bool,
+    collate_fn,
+) -> Dict[str, DataLoader]:
+    """Build evaluation loaders for datasets that expose split subset indices."""
+    if not hasattr(dataset, "get_split_subset_indices"):
+        return {}
+
+    subset_loaders = {}
+    for subset_name, indices in dataset.get_split_subset_indices().items():
+        if len(indices) == 0:
+            continue
+        subset_loaders[subset_name] = DataLoader(
+            torch.utils.data.Subset(dataset, indices),
+            batch_size=batch_size,
+            shuffle=False,
+            num_workers=num_workers,
+            pin_memory=pin_memory,
+            collate_fn=collate_fn,
+        )
+    return subset_loaders
+
+
 # ============================================================================
 # Model Components
 # ============================================================================
@@ -1085,6 +1111,24 @@ def evaluate_epoch(
             all_target_embeddings.append(target_embs.cpu())
             all_labels.append(batch['word_labels'])
 
+    if len(all_losses) == 0:
+        metrics = {'loss': 0.0}
+        total_samples = 0
+        for retrieval_size in retrieval_set_sizes:
+            metrics[f'top{k}_accuracy_retrieval{retrieval_size}'] = 0.0
+            metrics[f'n_samples_retrieval{retrieval_size}'] = 0
+            metrics[f'n_skipped_retrieval{retrieval_size}'] = total_samples
+            metrics[f'balanced_top{k}_accuracy_retrieval{retrieval_size}'] = 0.0
+        metrics.update({
+            'mean_cosine_similarity': 0.0,
+            'std_cosine_similarity': 0.0,
+            'mean_pred_norm': 0.0,
+            'std_pred_norm': 0.0,
+            'mean_target_norm': 0.0,
+            'std_target_norm': 0.0,
+        })
+        return metrics
+
     # Aggregate results
     all_pred_embeddings = torch.cat(all_pred_embeddings, dim=0)
     all_target_embeddings = torch.cat(all_target_embeddings, dim=0)
@@ -1125,7 +1169,9 @@ def train_and_evaluate(
     test_loader: DataLoader,
     vocab_embeddings: torch.Tensor,
     cfg: DictConfig,
-    device: str
+    device: str,
+    val_subset_loaders: Optional[Dict[str, DataLoader]] = None,
+    test_subset_loaders: Optional[Dict[str, DataLoader]] = None,
 ) -> Dict[str, float]:
     """
     Main training and evaluation loop.
@@ -1139,10 +1185,15 @@ def train_and_evaluate(
         vocab_embeddings: [vocab_size, 1024] T5 embeddings
         cfg: Hydra configuration
         device: Device to run on
+        val_subset_loaders: Optional validation loaders for per-subset metrics
+        test_subset_loaders: Optional test loaders for per-subset metrics
 
     Returns:
         test_metrics: Final test set metrics
     """
+    val_subset_loaders = val_subset_loaders or {}
+    test_subset_loaders = test_subset_loaders or {}
+
     # Setup optimizer with mode-appropriate learning rates
     if cfg.model.train_from_scratch:
         # From scratch: use same LR for both components
@@ -1272,6 +1323,24 @@ def train_and_evaluate(
             k=cfg.evaluation.k
         )
 
+        val_subset_metrics = {}
+        for subset_name, subset_loader in val_subset_loaders.items():
+            val_subset_metrics[subset_name] = evaluate_epoch(
+                criss_cross_model, word_mlp, subset_loader,
+                vocab_embeddings, criterion, device,
+                retrieval_set_sizes=cfg.evaluation.retrieval_set_sizes,
+                k=cfg.evaluation.k
+            )
+
+        test_subset_metrics = {}
+        for subset_name, subset_loader in test_subset_loaders.items():
+            test_subset_metrics[subset_name] = evaluate_epoch(
+                criss_cross_model, word_mlp, subset_loader,
+                vocab_embeddings, criterion, device,
+                retrieval_set_sizes=cfg.evaluation.retrieval_set_sizes,
+                k=cfg.evaluation.k
+            )
+
         # Get primary retrieval set size for early stopping (largest in list)
         primary_retrieval_size = cfg.evaluation.retrieval_set_sizes[-1]
         k = cfg.evaluation.k
@@ -1285,13 +1354,39 @@ def train_and_evaluate(
             test_balanced = test_metrics.get(f'balanced_top{k}_accuracy_retrieval{ret_size}', 0)
             logger.info(f"  [Retrieval {ret_size}] Val top-{k}: {val_acc:.4f}, balanced: {val_balanced:.4f} (n={val_n})")
             logger.info(f"  [Retrieval {ret_size}] Test top-{k}: {test_acc:.4f}, balanced: {test_balanced:.4f}")
+            for subset_name, metrics in val_subset_metrics.items():
+                subset_acc = metrics.get(f'top{k}_accuracy_retrieval{ret_size}', 0)
+                subset_balanced = metrics.get(f'balanced_top{k}_accuracy_retrieval{ret_size}', 0)
+                subset_n = metrics.get(f'n_samples_retrieval{ret_size}', 0)
+                logger.info(
+                    f"  [Retrieval {ret_size}] Val/{subset_name} top-{k}: "
+                    f"{subset_acc:.4f}, balanced: {subset_balanced:.4f} (n={subset_n})"
+                )
+            for subset_name, metrics in test_subset_metrics.items():
+                subset_acc = metrics.get(f'top{k}_accuracy_retrieval{ret_size}', 0)
+                subset_balanced = metrics.get(f'balanced_top{k}_accuracy_retrieval{ret_size}', 0)
+                subset_n = metrics.get(f'n_samples_retrieval{ret_size}', 0)
+                logger.info(
+                    f"  [Retrieval {ret_size}] Test/{subset_name} top-{k}: "
+                    f"{subset_acc:.4f}, balanced: {subset_balanced:.4f} (n={subset_n})"
+                )
 
         # Log to WandB
         log_dict = {
             'epoch': epoch + 1,
             'train/loss': train_loss,
             **{f'val/{metric_k}': v for metric_k, v in val_metrics.items()},
-            **{f'test_during_train/{metric_k}': v for metric_k, v in test_metrics.items()}
+            **{f'test_during_train/{metric_k}': v for metric_k, v in test_metrics.items()},
+            **{
+                f'val_by_subset/{subset_name}/{metric_k}': v
+                for subset_name, metrics in val_subset_metrics.items()
+                for metric_k, v in metrics.items()
+            },
+            **{
+                f'test_by_subset/{subset_name}/{metric_k}': v
+                for subset_name, metrics in test_subset_metrics.items()
+                for metric_k, v in metrics.items()
+            },
         }
 
         # Log best test metrics at best validation (tracks test performance at best val checkpoint so far)
@@ -1325,6 +1420,8 @@ def train_and_evaluate(
                 'scheduler_state_dict': scheduler.state_dict(),
                 'val_metrics': val_metrics,
                 'test_metrics_at_best_val': test_metrics,  # Test metrics at this epoch
+                'val_subset_metrics': val_subset_metrics,
+                'test_subset_metrics_at_best_val': test_subset_metrics,
                 'best_val_top10_acc': best_val_top10_acc,
                 'patience_counter': patience_counter,
                 'best_val_epoch': best_val_epoch,
@@ -1345,6 +1442,8 @@ def train_and_evaluate(
             'optimizer_state_dict': optimizer.state_dict(),
             'scheduler_state_dict': scheduler.state_dict(),
             'val_metrics': val_metrics,
+            'val_subset_metrics': val_subset_metrics,
+            'test_subset_metrics': test_subset_metrics,
             'best_val_top10_acc': best_val_top10_acc,
             'patience_counter': patience_counter,
             'best_val_epoch': best_val_epoch,
@@ -1804,6 +1903,30 @@ def main(cfg: DictConfig):
         collate_fn=collate_fn
     )
 
+    val_subset_loaders = _create_eval_subset_loaders(
+        val_dataset,
+        batch_size=cfg.training.batch_size,
+        num_workers=cfg.training.num_workers,
+        pin_memory=cfg.training.pin_memory,
+        collate_fn=collate_fn,
+    )
+    test_subset_loaders = _create_eval_subset_loaders(
+        test_dataset,
+        batch_size=cfg.training.batch_size,
+        num_workers=cfg.training.num_workers,
+        pin_memory=cfg.training.pin_memory,
+        collate_fn=collate_fn,
+    )
+
+    if val_subset_loaders:
+        logger.info("  Val subsets:")
+        for subset_name, subset_loader in val_subset_loaders.items():
+            logger.info(f"    {subset_name}: {len(subset_loader.dataset)} segments")
+    if test_subset_loaders:
+        logger.info("  Test subsets:")
+        for subset_name, subset_loader in test_subset_loaders.items():
+            logger.info(f"    {subset_name}: {len(subset_loader.dataset)} segments")
+
     # 6. Create word embedding MLP
     # Use the max_channel_dim computed earlier (based on dataset_type or config override)
     num_channels = max_channel_dim
@@ -1834,7 +1957,9 @@ def main(cfg: DictConfig):
     test_metrics = train_and_evaluate(
         criss_cross_model, word_mlp,
         train_loader, val_loader, test_loader,
-        vocab_embeddings, cfg, cfg.device
+        vocab_embeddings, cfg, cfg.device,
+        val_subset_loaders=val_subset_loaders,
+        test_subset_loaders=test_subset_loaders,
     )
 
     # 8. Save the test metrics captured during training at the best validation epoch.

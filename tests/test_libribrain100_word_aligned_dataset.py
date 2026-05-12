@@ -123,6 +123,9 @@ def test_sherlock_fixed_splits_and_competition_discovery(tmp_path):
     assert _words(val) == ["val_sherlock1"]
     assert _words(test) == ["test_sherlock1"]
     assert any(rec["source_serialised_dir"] == "serialised_competition" for rec in train.recordings)
+    assert set(train.get_split_subset_indices()) == {"Sherlock", "Sherlock1"}
+    assert set(val.get_split_subset_indices()) == {"Sherlock1"}
+    assert set(test.get_split_subset_indices()) == {"Sherlock1"}
 
 
 def test_themoth_and_mocha_timit_splits(tmp_path):
@@ -167,6 +170,8 @@ def test_themoth_and_mocha_timit_splits(tmp_path):
     assert set(_words(train)) == {"moth_train", "mocha_train_a", "mocha_train_d"}
     assert set(_words(val)) == {"moth_val", "mocha_val_1", "mocha_val_2"}
     assert set(_words(test)) == {"moth_test", "mocha_test_1", "mocha_test_2"}
+    assert set(val.get_split_subset_indices()) == {"TheMoth", "MOCHATIMIT"}
+    assert set(test.get_split_subset_indices()) == {"TheMoth", "MOCHATIMIT"}
 
 
 def test_timit_speaker_split_sa_exclusion_and_train_overlap_exclusion(tmp_path):
@@ -199,6 +204,8 @@ def test_timit_speaker_split_sa_exclusion_and_train_overlap_exclusion(tmp_path):
     assert set(_words(train)) == {"train_word", "train_sa_allowed"}
     assert _words(val) == ["val_word"]
     assert _words(test) == ["test_word"]
+    assert set(val.get_split_subset_indices()) == {"TIMIT"}
+    assert set(test.get_split_subset_indices()) == {"TIMIT"}
 
 
 def test_missing_sensor_geometry_fails_loudly(tmp_path):
