@@ -4,6 +4,7 @@
 model:
   # Training mode: false = fine-tune from pretrained, true = train from scratch
   train_from_scratch: false
+  use_gradient_checkpointing: false
 
   # Path to pretrained CrissCrossTransformer checkpoint
   # (Used for loading weights when train_from_scratch=false, or just architecture when train_from_scratch=true)
@@ -95,6 +96,7 @@ t5:
 training:
   batch_size: 1
   num_epochs: 50
+  use_torch_compile: false
 
   # Learning rates for different training modes
   criss_cross_lr: 1.0e-5  # Small LR to preserve pretrained features

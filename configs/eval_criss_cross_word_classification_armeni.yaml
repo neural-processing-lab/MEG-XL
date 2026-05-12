@@ -4,6 +4,7 @@
 model:
   # Training mode: false = fine-tune from pretrained, true = train from scratch
   train_from_scratch: false
+  use_gradient_checkpointing: false
 
   # Path to pretrained CrissCrossTransformer checkpoint
   # (Used for loading weights when train_from_scratch=false, or just architecture when train_from_scratch=true)
@@ -98,6 +99,7 @@ t5:
 training:
   batch_size: 1  # Effective batch size: 4 samples * 10 words = 40 words per batch
   num_epochs: 50
+  use_torch_compile: false
 
   # Resume from checkpoint (path to checkpoint_latest.pt or checkpoint_best.pt)
   resume_checkpoint: null

@@ -31,10 +31,14 @@ import hashlib
 from pathlib import Path
 from typing import Dict, List, Tuple, Optional, Any
 from collections import Counter
+from contextlib import nullcontext
 
 import hydra
 from omegaconf import DictConfig, OmegaConf
 import torch
+
+torch.set_float32_matmul_precision("medium")
+
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
@@ -55,6 +59,32 @@ from brainstorm.data.libribrain_word_aligned_dataset import LibriBrainWordAligne
 from brainstorm.losses.contrastive import SigLipLoss
 
 logger = logging.getLogger(__name__)
+
+
+def _base_model_for_state_dict(model: nn.Module) -> nn.Module:
+    """Return the original module when torch.compile wraps it."""
+    return getattr(model, "_orig_mod", model)
+
+
+def _model_state_dict(model: nn.Module) -> Dict[str, torch.Tensor]:
+    return _base_model_for_state_dict(model).state_dict()
+
+
+def _load_model_state_dict(model: nn.Module, state_dict: Dict[str, torch.Tensor]):
+    base_model = _base_model_for_state_dict(model)
+    has_compile_prefix = any(key.startswith("_orig_mod.") for key in state_dict)
+
+    if base_model is not model:
+        if has_compile_prefix:
+            return model.load_state_dict(state_dict)
+        return base_model.load_state_dict(state_dict)
+
+    if has_compile_prefix:
+        state_dict = {
+            key[len("_orig_mod."):] if key.startswith("_orig_mod.") else key: value
+            for key, value in state_dict.items()
+        }
+    return model.load_state_dict(state_dict)
 
 
 # ============================================================================
@@ -941,41 +971,49 @@ def training_step(
     sensor_types = batch['sensor_types'].to(device)
     sensor_mask = batch['sensor_mask'].to(device)
 
-    # 1. Forward pass through CrissCross (no masking for evaluation)
-    output = criss_cross_model(
-        meg, sensor_xyz, sensor_abc, sensor_types, sensor_mask,
-        apply_mask=False
+    use_cuda_amp = torch.device(device).type == "cuda" and torch.cuda.is_available()
+    autocast_context = (
+        torch.autocast(device_type="cuda", dtype=torch.bfloat16)
+        if use_cuda_amp
+        else nullcontext()
     )
-    features = output['features']  # [B, C, 625, 512]
 
-    # 2. Extract word embeddings for all subsegments
-    word_embeddings = []
+    with autocast_context:
+        # 1. Forward pass through CrissCross (no masking for evaluation)
+        output = criss_cross_model(
+            meg, sensor_xyz, sensor_abc, sensor_types, sensor_mask,
+            apply_mask=False
+        )
+        features = output['features']  # [B, C, 625, 512]
 
-    for info in subsegment_info:
-        b_idx = info['batch_idx']
-        start_sample = info['start_sample']
-        end_sample = info['end_sample']
+        # 2. Extract word embeddings for all subsegments
+        word_embeddings = []
 
-        # Map to encoded timesteps
-        start_t, end_t = map_raw_to_encoded_timesteps(start_sample, end_sample)
+        for info in subsegment_info:
+            b_idx = info['batch_idx']
+            start_sample = info['start_sample']
+            end_sample = info['end_sample']
 
-        # Extract features for this word
-        word_features = features[b_idx, :, start_t:end_t, :]  # [C, T_subseg, 512]
+            # Map to encoded timesteps
+            start_t, end_t = map_raw_to_encoded_timesteps(start_sample, end_sample)
 
-        # Pass through word MLP
-        word_emb = word_mlp(word_features)  # [1024]
-        word_embeddings.append(word_emb)
+            # Extract features for this word
+            word_features = features[b_idx, :, start_t:end_t, :]  # [C, T_subseg, 512]
 
-    word_embeddings = torch.stack(word_embeddings)  # [B*10, 1024]
+            # Pass through word MLP
+            word_emb = word_mlp(word_features)  # [1024]
+            word_embeddings.append(word_emb)
 
-    # 3. Get target embeddings
-    # Index on CPU, then move to device
-    target_embeddings = vocab_embeddings[word_labels.cpu()].to(device)  # [B*10, 1024]
+        word_embeddings = torch.stack(word_embeddings)  # [B*10, 1024]
 
-    # 4. Compute SigLIP loss
-    loss = criterion(word_embeddings, target_embeddings, reweigh_positives=True)
+        # 3. Get target embeddings
+        # Index on CPU, then move to device
+        target_embeddings = vocab_embeddings[word_labels.cpu()].to(device)  # [B*10, 1024]
 
-    return loss, word_embeddings, target_embeddings
+        # 4. Compute SigLIP loss
+        loss = criterion(word_embeddings, target_embeddings, reweigh_positives=True)
+
+    return loss, word_embeddings.float(), target_embeddings.float()
 
 
 def evaluate_epoch(
@@ -1138,7 +1176,7 @@ def train_and_evaluate(
         resume_ckpt = torch.load(resume_checkpoint, map_location=device)
 
         # Load model states
-        criss_cross_model.load_state_dict(resume_ckpt['criss_cross_state_dict'])
+        _load_model_state_dict(criss_cross_model, resume_ckpt['criss_cross_state_dict'])
         word_mlp.load_state_dict(resume_ckpt['word_mlp_state_dict'])
 
         # Load optimizer state
@@ -1165,7 +1203,6 @@ def train_and_evaluate(
 
         # Training
         criss_cross_model.train()
-        criss_cross_model.enable_gradient_checkpointing()
         word_mlp.train()
 
         train_losses = []
@@ -1267,7 +1304,7 @@ def train_and_evaluate(
             checkpoint_path = Path(cfg.logging.save_dir) / 'checkpoint_best.pt'
             torch.save({
                 'epoch': epoch,
-                'criss_cross_state_dict': criss_cross_model.state_dict(),
+                'criss_cross_state_dict': _model_state_dict(criss_cross_model),
                 'word_mlp_state_dict': word_mlp.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'scheduler_state_dict': scheduler.state_dict(),
@@ -1288,7 +1325,7 @@ def train_and_evaluate(
         latest_checkpoint_path = Path(cfg.logging.save_dir) / 'checkpoint_latest.pt'
         torch.save({
             'epoch': epoch,
-            'criss_cross_state_dict': criss_cross_model.state_dict(),
+            'criss_cross_state_dict': _model_state_dict(criss_cross_model),
             'word_mlp_state_dict': word_mlp.state_dict(),
             'optimizer_state_dict': optimizer.state_dict(),
             'scheduler_state_dict': scheduler.state_dict(),
@@ -1308,7 +1345,7 @@ def train_and_evaluate(
     logger.info("\nLoading best model for final evaluation...")
     checkpoint_path = Path(cfg.logging.save_dir) / 'checkpoint_best.pt'
     checkpoint = torch.load(checkpoint_path, map_location=device)
-    criss_cross_model.load_state_dict(checkpoint['criss_cross_state_dict'])
+    _load_model_state_dict(criss_cross_model, checkpoint['criss_cross_state_dict'])
     word_mlp.load_state_dict(checkpoint['word_mlp_state_dict'])
 
     # Get test metrics from when checkpoint was saved (in-memory evaluation)
@@ -1718,6 +1755,15 @@ def main(cfg: DictConfig):
     logger.info(f"  Input dim: {num_channels * criss_cross_model.latent_dim}")
     logger.info(f"  Hidden dim: {cfg.model.word_mlp.hidden_dim}")
     logger.info(f"  Output dim: {cfg.model.word_mlp.embed_dim}")
+
+    # Configure optional memory/speed tradeoffs before optimizer construction.
+    if cfg.model.get('use_gradient_checkpointing', False):
+        criss_cross_model.enable_gradient_checkpointing()
+        logger.info("Enabled gradient checkpointing on criss_cross_model")
+
+    if cfg.training.get('use_torch_compile', False):
+        logger.info("Compiling criss_cross_model with torch.compile (first step will be slow)")
+        criss_cross_model = torch.compile(criss_cross_model)
 
     # 7. Train and evaluate
     test_metrics = train_and_evaluate(
