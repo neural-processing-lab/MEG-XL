@@ -24,3 +24,6 @@ einops>=0.6.0
 
 # Target embedding extraction
 transformers>=5.0.0
+
+# Open-vocabulary mutual information
+ovmi @ git+https://github.com/neural-processing-lab/OVMI.git

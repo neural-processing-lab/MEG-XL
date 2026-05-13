@@ -72,6 +72,7 @@ evaluation:
   retrieval_set_sizes: [50, 250]
   k_values: [1, 10]
   primary_k: 10
+  ovmi_sets: ["datafit50", "moses50"]
   named_retrieval_sets:
     datafit50:
       - "is"

@@ -62,6 +62,11 @@ from brainstorm.losses.contrastive import SigLipLoss
 
 logger = logging.getLogger(__name__)
 
+try:
+    from ovmi import ovmi as compute_ovmi
+except ImportError:
+    compute_ovmi = None
+
 
 def _base_model_for_state_dict(model: nn.Module) -> nn.Module:
     """Return the original module when torch.compile wraps it."""
@@ -226,6 +231,38 @@ def _build_named_retrieval_sets(
         logger.info(f"Named retrieval set '{set_name}': {len(indices)} words resolved")
 
     return resolved
+
+
+def _add_ovmi_metrics(
+    metrics: Dict[str, float],
+    named_retrieval_sets: Dict[str, List[int]],
+    vocab_words: Optional[List[str]],
+    ovmi_set_names: Optional[List[str]] = None,
+) -> None:
+    if compute_ovmi is None or not vocab_words:
+        return
+
+    requested_names = set(ovmi_set_names or ["datafit50", "moses50"])
+    for retrieval_name, retrieval_indices in named_retrieval_sets.items():
+        if retrieval_name not in requested_names:
+            continue
+
+        pc_key = f"balanced_top1_accuracy_{retrieval_name}"
+        if pc_key not in metrics:
+            continue
+
+        pc = float(metrics[pc_key])
+        vocabulary = [vocab_words[idx] for idx in retrieval_indices]
+        try:
+            result = compute_ovmi(vocabulary, accuracy=pc, return_details=True)
+        except Exception as exc:
+            logger.warning(f"Could not compute OVMI for {retrieval_name}: {exc}")
+            continue
+
+        metrics[f"ovmi_{retrieval_name}"] = float(result.score)
+        metrics[f"ovmi_coverage_{retrieval_name}"] = float(result.coverage)
+        metrics[f"ovmi_in_vocab_information_{retrieval_name}"] = float(result.in_vocab_information)
+        metrics[f"ovmi_pc_{retrieval_name}"] = pc
 
 
 def _get_eval_k_values(evaluation_cfg: Any) -> List[int]:
@@ -1413,6 +1450,8 @@ def evaluate_epoch(
     named_retrieval_sets: Optional[Dict[str, List[int]]] = None,
     input_noise_mode: Optional[str] = None,
     input_noise_seed: Optional[int] = None,
+    vocab_words: Optional[List[str]] = None,
+    ovmi_set_names: Optional[List[str]] = None,
 ) -> Dict[str, float]:
     """
     Evaluate on validation or test set.
@@ -1434,6 +1473,8 @@ def evaluate_epoch(
         named_retrieval_sets: Optional named vocab-index retrieval sets
         input_noise_mode: Optional mode for replacing MEG with random noise
         input_noise_seed: Optional deterministic seed for random noise
+        vocab_words: Optional full vocabulary list for OVMI named-set word lookup
+        ovmi_set_names: Optional named retrieval sets to score with OVMI
 
     Returns:
         metrics: Dictionary of evaluation metrics
@@ -1489,6 +1530,7 @@ def evaluate_epoch(
             'mean_target_norm': 0.0,
             'std_target_norm': 0.0,
         })
+        _add_ovmi_metrics(metrics, named_retrieval_sets, vocab_words, ovmi_set_names)
         return metrics
 
     # Aggregate results
@@ -1533,6 +1575,7 @@ def evaluate_epoch(
     # Embedding quality (computed on all samples)
     emb_metrics = compute_embedding_metrics(all_pred_embeddings, all_target_embeddings)
     metrics.update(emb_metrics)
+    _add_ovmi_metrics(metrics, named_retrieval_sets, vocab_words, ovmi_set_names)
 
     return metrics
 
@@ -1706,6 +1749,7 @@ def train_and_evaluate(
     test_subset_loaders: Optional[Dict[str, DataLoader]] = None,
     named_retrieval_sets: Optional[Dict[str, List[int]]] = None,
     subject_to_idx: Optional[Dict[str, int]] = None,
+    vocab_words: Optional[List[str]] = None,
 ) -> Dict[str, float]:
     """
     Main training and evaluation loop.
@@ -1723,6 +1767,7 @@ def train_and_evaluate(
         test_subset_loaders: Optional test loaders for per-subset metrics
         named_retrieval_sets: Optional named vocab-index retrieval sets
         subject_to_idx: Optional train-subject mapping for subject embedding artifacts
+        vocab_words: Optional full vocabulary list for OVMI metrics
 
     Returns:
         test_metrics: Final test set metrics
@@ -1806,6 +1851,7 @@ def train_and_evaluate(
         eval_k_values = _get_eval_k_values(cfg.evaluation)
         primary_k = int(cfg.evaluation.get('primary_k', cfg.evaluation.k))
         primary_metric_key = _primary_metric_key(cfg.evaluation)
+        ovmi_set_names = list(cfg.evaluation.get('ovmi_sets', ["datafit50", "moses50"]))
 
         # Training
         criss_cross_model.train()
@@ -1855,6 +1901,8 @@ def train_and_evaluate(
             k=cfg.evaluation.k,
             k_values=eval_k_values,
             named_retrieval_sets=named_retrieval_sets,
+            vocab_words=vocab_words,
+            ovmi_set_names=ovmi_set_names,
         )
 
         # Also evaluate on test set to understand dynamics (but don't use for early stopping)
@@ -1865,6 +1913,8 @@ def train_and_evaluate(
             k=cfg.evaluation.k,
             k_values=eval_k_values,
             named_retrieval_sets=named_retrieval_sets,
+            vocab_words=vocab_words,
+            ovmi_set_names=ovmi_set_names,
         )
 
         val_subset_metrics = {}
@@ -1876,6 +1926,8 @@ def train_and_evaluate(
                 k=cfg.evaluation.k,
                 k_values=eval_k_values,
                 named_retrieval_sets=named_retrieval_sets,
+                vocab_words=vocab_words,
+                ovmi_set_names=ovmi_set_names,
             )
 
         test_subset_metrics = {}
@@ -1887,6 +1939,8 @@ def train_and_evaluate(
                 k=cfg.evaluation.k,
                 k_values=eval_k_values,
                 named_retrieval_sets=named_retrieval_sets,
+                vocab_words=vocab_words,
+                ovmi_set_names=ovmi_set_names,
             )
 
         logger.info(f"  Val loss: {val_metrics['loss']:.4f}")
@@ -2021,6 +2075,8 @@ def train_and_evaluate(
                     named_retrieval_sets=named_retrieval_sets,
                     input_noise_mode=random_noise_mode,
                     input_noise_seed=random_noise_seed,
+                    vocab_words=vocab_words,
+                    ovmi_set_names=ovmi_set_names,
                 )
                 save_prediction_embeddings_npz(
                     save_dir / "best_test_random_noise_predictions.npz",
@@ -2595,6 +2651,7 @@ def main(cfg: DictConfig):
         test_subset_loaders=test_subset_loaders,
         named_retrieval_sets=named_retrieval_sets,
         subject_to_idx=subject_to_idx,
+        vocab_words=vocab,
     )
 
     # 8. Save the test metrics captured during training at the best validation epoch.

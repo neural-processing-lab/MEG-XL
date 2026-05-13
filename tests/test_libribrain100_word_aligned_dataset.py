@@ -9,12 +9,14 @@ import pytest
 import torch
 from omegaconf import OmegaConf
 
+import brainstorm.evaluate_criss_cross_word_classification as eval_word_cls
 from brainstorm.data import LibriBrain100WordAlignedDataset
 from brainstorm.data.libribrain100_word_aligned_dataset import (
     TIMIT_TEST_SPEAKERS,
     TIMIT_VALIDATION_SPEAKERS,
 )
 from brainstorm.evaluate_criss_cross_word_classification import (
+    _add_ovmi_metrics,
     _build_named_retrieval_sets,
     _primary_metric_key,
     RANDOM_NOISE_MODE_MATCHED_PER_SAMPLE_CHANNEL,
@@ -600,6 +602,7 @@ def test_libribrain100_factory_and_config_smoke():
     assert cfg.model.word_mlp.use_subject_film is True
     assert cfg.model.word_mlp.subject_embedding_dim == 64
     assert list(cfg.evaluation.k_values) == [1, 10]
+    assert list(cfg.evaluation.ovmi_sets) == ["datafit50", "moses50"]
     assert cfg.evaluation.primary_k == 10
     assert len(cfg.evaluation.named_retrieval_sets.datafit50) == 50
     assert len(cfg.evaluation.named_retrieval_sets.moses50) == 50
@@ -627,6 +630,38 @@ def test_named_retrieval_set_resolution_handles_curly_apostrophe():
         word_to_idx,
     )
     assert resolved == {"datafit50": [0, 1, 2]}
+
+
+def test_ovmi_metrics_use_top1_balanced_accuracy(monkeypatch):
+    class DummyOVMIResult:
+        score = 1.5
+        coverage = 0.25
+        in_vocab_information = 6.0
+
+    calls = []
+
+    def fake_ovmi(vocabulary, accuracy, return_details):
+        calls.append((vocabulary, accuracy, return_details))
+        return DummyOVMIResult()
+
+    monkeypatch.setattr(eval_word_cls, "compute_ovmi", fake_ovmi)
+    metrics = {
+        "balanced_top1_accuracy_datafit50": 0.42,
+        "balanced_top10_accuracy_datafit50": 0.99,
+    }
+
+    _add_ovmi_metrics(
+        metrics,
+        {"datafit50": [1, 0], "other": [2]},
+        ["alpha", "beta", "gamma"],
+        ["datafit50"],
+    )
+
+    assert calls == [(["beta", "alpha"], 0.42, True)]
+    assert metrics["ovmi_datafit50"] == 1.5
+    assert metrics["ovmi_coverage_datafit50"] == 0.25
+    assert metrics["ovmi_in_vocab_information_datafit50"] == 6.0
+    assert metrics["ovmi_pc_datafit50"] == 0.42
 
 
 def test_artifact_npz_writers(tmp_path):
