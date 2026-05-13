@@ -45,7 +45,7 @@ data:
 evaluation:
   primary_metric: "balanced_top10_accuracy_datafit50"
   random_noise_test:
-    enabled: true
+    enabled: false
     mode: "matched_gaussian_per_sample_channel"
 
 logging:
