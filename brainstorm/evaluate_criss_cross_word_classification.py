@@ -258,14 +258,29 @@ class CrissCrossWordEmbeddingExtractor(nn.Module):
         latent_dim: int = 512,
         embed_dim: int = 1024,
         hidden_dim: int = 2048,
-        dropout: float = 0.1
+        dropout: float = 0.1,
+        use_subject_film: bool = False,
+        num_subjects: int = 0,
+        subject_embedding_dim: int = 64,
     ):
         super().__init__()
         self.num_channels = num_channels
         self.latent_dim = latent_dim
         self.embed_dim = embed_dim
+        self.use_subject_film = use_subject_film
 
         input_dim = num_channels * latent_dim
+        if use_subject_film:
+            if num_subjects <= 0:
+                raise ValueError("num_subjects must be positive when use_subject_film=True")
+            self.subject_embedding = nn.Embedding(num_subjects, subject_embedding_dim)
+            self.subject_film = nn.Linear(subject_embedding_dim, 2 * input_dim)
+            nn.init.zeros_(self.subject_film.weight)
+            nn.init.zeros_(self.subject_film.bias)
+        else:
+            self.subject_embedding = None
+            self.subject_film = None
+
         self.mlp = nn.Sequential(
             nn.Linear(input_dim, hidden_dim),
             nn.LayerNorm(hidden_dim),
@@ -274,10 +289,28 @@ class CrissCrossWordEmbeddingExtractor(nn.Module):
             nn.Linear(hidden_dim, embed_dim)
         )
 
-    def forward(self, features: torch.Tensor) -> torch.Tensor:
+    def _subject_conditioning(self, subject_idx: Optional[Any], device: torch.device) -> torch.Tensor:
+        if self.subject_embedding is None:
+            raise RuntimeError("Subject conditioning requested but subject_embedding is not initialized")
+
+        if subject_idx is None:
+            idx_value = -1
+        elif isinstance(subject_idx, torch.Tensor):
+            idx_value = int(subject_idx.detach().cpu().item())
+        else:
+            idx_value = int(subject_idx)
+
+        if idx_value < 0:
+            return self.subject_embedding.weight.mean(dim=0)
+
+        idx_tensor = torch.tensor(idx_value, dtype=torch.long, device=device)
+        return self.subject_embedding(idx_tensor)
+
+    def forward(self, features: torch.Tensor, subject_idx: Optional[Any] = None) -> torch.Tensor:
         """
         Args:
             features: [C, T_subseg, latent_dim] - features for one word subsegment
+            subject_idx: Optional train-subject index. Negative/None uses the mean subject embedding.
 
         Returns:
             embedding: [embed_dim] - predicted T5 embedding
@@ -287,6 +320,12 @@ class CrissCrossWordEmbeddingExtractor(nn.Module):
 
         # Flatten
         flat = pooled.reshape(-1)  # [C * latent_dim]
+
+        if self.use_subject_film:
+            subject_emb = self._subject_conditioning(subject_idx, flat.device)
+            gamma_beta = self.subject_film(subject_emb)
+            gamma, beta = gamma_beta.chunk(2, dim=-1)
+            flat = flat * (1.0 + gamma) + beta
 
         # MLP projection
         embedding = self.mlp(flat)  # [embed_dim]
@@ -545,12 +584,73 @@ def generate_word_embeddings(
 # Custom Collate Function
 # ============================================================================
 
-def create_word_level_collate_fn(word_to_idx: Dict[str, int]):
+def _path_hash(path_value: Any) -> str:
+    path = Path(str(path_value)).expanduser().resolve()
+    return hashlib.sha256(str(path).encode("utf-8")).hexdigest()[:8]
+
+
+def make_subject_key(source_root: Any, task: Any, subject: Any) -> str:
+    subject_str = str(subject or "")
+    task_str = str(task or "")
+    if source_root:
+        return f"{_path_hash(source_root)}:{task_str}:{subject_str}"
+    if task_str:
+        return f"{task_str}:{subject_str}"
+    return subject_str
+
+
+def _subject_key_from_sample(sample: Dict[str, Any]) -> str:
+    return make_subject_key(
+        sample.get("source_root", ""),
+        sample.get("task", ""),
+        sample.get("subject", ""),
+    )
+
+
+def _subject_key_from_recording(recording: Dict[str, Any]) -> str:
+    return make_subject_key(
+        recording.get("root", recording.get("source_root", "")),
+        recording.get("task", ""),
+        recording.get("subject", ""),
+    )
+
+
+def _resolve_subset(dataset: Any) -> Tuple[Any, Optional[List[int]]]:
+    if hasattr(dataset, "dataset") and hasattr(dataset, "indices"):
+        base_dataset, parent_indices = _resolve_subset(dataset.dataset)
+        indices = [int(idx) for idx in dataset.indices]
+        if parent_indices is not None:
+            indices = [parent_indices[idx] for idx in indices]
+        return base_dataset, indices
+    return dataset, None
+
+
+def build_subject_to_idx(train_dataset: Any) -> Dict[str, int]:
+    base_dataset, indices = _resolve_subset(train_dataset)
+    subject_keys = set()
+
+    if hasattr(base_dataset, "segment_index") and hasattr(base_dataset, "recordings"):
+        segment_indices = indices if indices is not None else range(len(base_dataset.segment_index))
+        for segment_idx in segment_indices:
+            rec_idx, _group_idx = base_dataset.segment_index[int(segment_idx)]
+            subject_keys.add(_subject_key_from_recording(base_dataset.recordings[rec_idx]))
+    elif hasattr(base_dataset, "recordings"):
+        for recording in base_dataset.recordings:
+            subject_keys.add(_subject_key_from_recording(recording))
+
+    return {subject_key: idx for idx, subject_key in enumerate(sorted(subject_keys))}
+
+
+def create_word_level_collate_fn(
+    word_to_idx: Dict[str, int],
+    subject_to_idx: Optional[Dict[str, int]] = None,
+):
     """
     Create a collate function that tracks word labels for SigLIP loss.
 
     Args:
         word_to_idx: Mapping from word string to vocabulary index (includes ALL words)
+        subject_to_idx: Optional train-subject mapping. Unknown subjects map to -1.
 
     Returns:
         collate_fn: Collate function for DataLoader
@@ -571,7 +671,8 @@ def create_word_level_collate_fn(word_to_idx: Dict[str, int]):
         Output: Dict with batched word samples:
             - meg: [B, C, 7500] - raw MEG for CrissCross
             - word_labels: [B*N] - word indices in vocabulary (N = words_per_segment * B)
-            - subsegment_info: List of dicts with batch_idx, start, end for N words
+            - subsegment_info: List of dicts with batch_idx, start, end, subject_idx for N words
+            - word_metadata: List of per-word metadata rows for artifact export
             - sensor_xyzdir: [B, C, 6]
             - sensor_types: [B, C]
             - sensor_mask: [B, C]
@@ -601,6 +702,8 @@ def create_word_level_collate_fn(word_to_idx: Dict[str, int]):
         for batch_idx, sample in enumerate(batch):
             wordidxs = sample.get('wordidxs', [-1] * len(sample['words']))
             sentenceidxs = sample.get('sentenceidxs', [-1] * len(sample['words']))
+            subject_key = _subject_key_from_sample(sample)
+            subject_idx = subject_to_idx.get(subject_key, -1) if subject_to_idx is not None else -1
             for subseg_idx, (word, boundary, wordidx, sentenceidx) in enumerate(zip(
                 sample['words'],
                 sample['subsegment_boundaries'],
@@ -619,7 +722,8 @@ def create_word_level_collate_fn(word_to_idx: Dict[str, int]):
                     'batch_idx': batch_idx,
                     'subseg_idx': subseg_idx,
                     'start_sample': boundary['start_sample'],
-                    'end_sample': boundary['end_sample']
+                    'end_sample': boundary['end_sample'],
+                    'subject_idx': int(subject_idx),
                 })
                 word_metadata.append({
                     'task': sample.get('task', ''),
@@ -629,6 +733,7 @@ def create_word_level_collate_fn(word_to_idx: Dict[str, int]):
                     'wordidx': int(wordidx) if wordidx is not None else -1,
                     'sentenceidx': int(sentenceidx) if sentenceidx is not None else -1,
                     'word_label': int(word_label),
+                    'subject_idx': int(subject_idx),
                 })
 
         return {
@@ -1218,7 +1323,7 @@ def training_step(
             word_features = features[b_idx, :, start_t:end_t, :]  # [C, T_subseg, 512]
 
             # Pass through word MLP
-            word_emb = word_mlp(word_features)  # [1024]
+            word_emb = word_mlp(word_features, subject_idx=info.get('subject_idx', -1))  # [1024]
             word_embeddings.append(word_emb)
 
         word_embeddings = torch.stack(word_embeddings)  # [B*10, 1024]
@@ -1441,6 +1546,7 @@ def write_prediction_embeddings_npz(
         wordidx=np.asarray([row.get('wordidx', -1) for row in metadata_rows], dtype=np.int64),
         sentenceidx=np.asarray([row.get('sentenceidx', -1) for row in metadata_rows], dtype=np.int64),
         word_label=np.asarray([row.get('word_label', -1) for row in metadata_rows], dtype=np.int64),
+        subject_idx=np.asarray([row.get('subject_idx', -1) for row in metadata_rows], dtype=np.int64),
         predicted_embeddings=predicted_embeddings.astype(np.float32, copy=False),
     )
 
@@ -2238,8 +2344,16 @@ def main(cfg: DictConfig):
     save_target_embeddings_npz(save_dir, vocab, vocab_embeddings)
     save_val_test_word_counts_npz(save_dir, val_dataset, test_dataset)
 
+    use_subject_film = bool(cfg.model.word_mlp.get('use_subject_film', False))
+    subject_embedding_dim = int(cfg.model.word_mlp.get('subject_embedding_dim', 64))
+    subject_to_idx = build_subject_to_idx(train_dataset) if use_subject_film else None
+    if use_subject_film:
+        logger.info(f"\nSubject FiLM:")
+        logger.info(f"  Train subjects: {len(subject_to_idx)}")
+        logger.info(f"  Subject embedding dim: {subject_embedding_dim}")
+
     # Create collate function
-    collate_fn = create_word_level_collate_fn(word_to_idx)
+    collate_fn = create_word_level_collate_fn(word_to_idx, subject_to_idx=subject_to_idx)
 
     # Create data loaders
     train_loader = DataLoader(
@@ -2302,13 +2416,17 @@ def main(cfg: DictConfig):
         latent_dim=criss_cross_model.latent_dim,
         embed_dim=cfg.model.word_mlp.embed_dim,
         hidden_dim=cfg.model.word_mlp.hidden_dim,
-        dropout=cfg.model.word_mlp.dropout
+        dropout=cfg.model.word_mlp.dropout,
+        use_subject_film=use_subject_film,
+        num_subjects=len(subject_to_idx) if subject_to_idx is not None else 0,
+        subject_embedding_dim=subject_embedding_dim,
     ).to(cfg.device)
 
     logger.info(f"\nWord MLP:")
     logger.info(f"  Input dim: {num_channels * criss_cross_model.latent_dim}")
     logger.info(f"  Hidden dim: {cfg.model.word_mlp.hidden_dim}")
     logger.info(f"  Output dim: {cfg.model.word_mlp.embed_dim}")
+    logger.info(f"  Subject FiLM: {use_subject_film}")
 
     # Configure optional memory/speed tradeoffs before optimizer construction.
     if cfg.model.get('use_gradient_checkpointing', False):

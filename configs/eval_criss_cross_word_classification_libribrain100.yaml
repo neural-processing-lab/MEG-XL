@@ -10,6 +10,8 @@ model:
     hidden_dim: 2048
     embed_dim: 1024
     dropout: 0.1
+    use_subject_film: true
+    subject_embedding_dim: 64
 
 data:
   dataset_type: "libribrain100"

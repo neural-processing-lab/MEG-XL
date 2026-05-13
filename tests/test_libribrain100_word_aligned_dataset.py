@@ -16,12 +16,17 @@ from brainstorm.data.libribrain100_word_aligned_dataset import (
 )
 from brainstorm.evaluate_criss_cross_word_classification import (
     _build_named_retrieval_sets,
+    CrissCrossWordEmbeddingExtractor,
+    build_subject_to_idx,
     create_word_level_collate_fn,
     get_dataset_class,
+    make_subject_key,
     save_target_embeddings_npz,
     save_val_test_word_counts_npz,
+    training_step,
     write_prediction_embeddings_npz,
 )
+from brainstorm.losses.contrastive import SigLipLoss
 
 
 def _write_sensor_json(root: Path) -> None:
@@ -146,10 +151,12 @@ def test_libribrain100_word_metadata_survives_sample_and_collate(tmp_path):
     assert sample["words"] == ["val_sherlock1"]
     assert sample["wordidxs"] == [0]
     assert sample["sentenceidxs"] == [0]
+    assert sample["source_root"] == str(root)
 
     collate_fn = create_word_level_collate_fn({"val_sherlock1": 7})
     batch = collate_fn([sample])
     assert batch["word_labels"].tolist() == [7]
+    assert batch["subsegment_info"][0]["subject_idx"] == -1
     assert batch["word_metadata"] == [{
         "task": "Sherlock1",
         "subject": "sub-1",
@@ -158,7 +165,126 @@ def test_libribrain100_word_metadata_survives_sample_and_collate(tmp_path):
         "wordidx": 0,
         "sentenceidx": 0,
         "word_label": 7,
+        "subject_idx": -1,
     }]
+
+
+def test_libribrain100_subject_keys_are_namespaced_by_root_and_task(tmp_path):
+    root1 = tmp_path / "LibriBrain_hf"
+    root2 = tmp_path / "LibriBrain2_hf"
+    _write_sensor_json(root1)
+
+    _write_recording(root1, "Sherlock2", "sub-0", "ses-1", [("segments/", "root1_word")])
+    _write_recording(root2, "Sherlock2", "sub-0", "ses-1", [("segments/", "root2_word")])
+    _write_recording(root2, "Sherlock3", "sub-0", "ses-1", [("segments/", "task_word")])
+
+    train = _dataset([root1, root2], "train", tasks=["Sherlock2", "Sherlock3"])
+    subject_to_idx = build_subject_to_idx(train)
+
+    assert len(subject_to_idx) == 3
+    assert make_subject_key(root1, "Sherlock2", "sub-0") in subject_to_idx
+    assert make_subject_key(root2, "Sherlock2", "sub-0") in subject_to_idx
+    assert make_subject_key(root2, "Sherlock3", "sub-0") in subject_to_idx
+
+
+def test_subject_indices_known_and_unknown_in_collate(tmp_path):
+    root = tmp_path / "LibriBrain_hf"
+    _write_sensor_json(root)
+    _write_recording(root, "Sherlock1", "sub-0", "ses-1", [("segments/", "known")])
+    _write_recording(root, "Sherlock1", "sub-1", "ses-11", [("segments/", "unknown")])
+
+    train = _dataset(root, "train", tasks=["Sherlock1"])
+    val = _dataset(root, "val", tasks=["Sherlock1"])
+    subject_to_idx = build_subject_to_idx(train)
+
+    train_batch = create_word_level_collate_fn({"known": 0}, subject_to_idx=subject_to_idx)([train[0]])
+    val_batch = create_word_level_collate_fn({"unknown": 1}, subject_to_idx=subject_to_idx)([val[0]])
+
+    assert train_batch["subsegment_info"][0]["subject_idx"] >= 0
+    assert train_batch["word_metadata"][0]["subject_idx"] >= 0
+    assert val_batch["subsegment_info"][0]["subject_idx"] == -1
+    assert val_batch["word_metadata"][0]["subject_idx"] == -1
+
+
+def test_subject_film_identity_initialization_preserves_output():
+    torch.manual_seed(0)
+    plain = CrissCrossWordEmbeddingExtractor(
+        num_channels=2,
+        latent_dim=4,
+        embed_dim=4,
+        hidden_dim=8,
+        dropout=0.0,
+    )
+    film = CrissCrossWordEmbeddingExtractor(
+        num_channels=2,
+        latent_dim=4,
+        embed_dim=4,
+        hidden_dim=8,
+        dropout=0.0,
+        use_subject_film=True,
+        num_subjects=2,
+        subject_embedding_dim=3,
+    )
+    film.mlp.load_state_dict(plain.mlp.state_dict())
+
+    features = torch.randn(2, 5, 4)
+    assert torch.allclose(plain(features), film(features, subject_idx=1))
+    assert torch.allclose(plain(features), film(features, subject_idx=-1))
+
+
+def test_training_step_with_subject_film_smoke():
+    class DummyCrissCross(torch.nn.Module):
+        latent_dim = 4
+
+        def forward(self, meg, sensor_xyz, sensor_abc, sensor_types, sensor_mask, apply_mask=False):
+            batch_size, n_channels, _ = meg.shape
+            features = torch.ones(batch_size, n_channels, 10, self.latent_dim, device=meg.device)
+            return {"features": features}
+
+    word_mlp = CrissCrossWordEmbeddingExtractor(
+        num_channels=2,
+        latent_dim=4,
+        embed_dim=4,
+        hidden_dim=8,
+        dropout=0.0,
+        use_subject_film=True,
+        num_subjects=1,
+        subject_embedding_dim=3,
+    )
+    batch = {
+        "meg": torch.zeros(1, 2, 24),
+        "word_labels": torch.tensor([0]),
+        "subsegment_info": [{
+            "batch_idx": 0,
+            "subseg_idx": 0,
+            "start_sample": 0,
+            "end_sample": 24,
+            "subject_idx": -1,
+        }],
+        "sensor_xyzdir": torch.zeros(1, 2, 6),
+        "sensor_types": torch.zeros(1, 2, dtype=torch.long),
+        "sensor_mask": torch.ones(1, 2),
+    }
+    criterion = SigLipLoss(
+        norm_kind="xy",
+        temperature=False,
+        bias=False,
+        identical_candidates_threshold=None,
+        reduction="sum",
+    )
+
+    loss, pred_embs, target_embs = training_step(
+        batch,
+        DummyCrissCross(),
+        word_mlp,
+        torch.ones(1, 4),
+        criterion,
+        "cpu",
+    )
+
+    assert torch.isfinite(loss)
+    assert pred_embs.shape == (1, 4)
+    assert target_embs.shape == (1, 4)
 
 
 def test_themoth_and_mocha_timit_splits(tmp_path):
@@ -256,6 +382,8 @@ def test_libribrain100_factory_and_config_smoke():
     assert cfg.data.dataset_type == "libribrain100"
     assert cfg.data.split_strategy == "libribrain100"
     assert list(cfg.data.root) == ["/data/engs-asr/LibriBrain_hf", "/data/engs-asr/LibriBrain2_hf"]
+    assert cfg.model.word_mlp.use_subject_film is True
+    assert cfg.model.word_mlp.subject_embedding_dim == 64
     assert list(cfg.evaluation.k_values) == [1, 10]
     assert cfg.evaluation.primary_k == 10
     assert len(cfg.evaluation.named_retrieval_sets.datafit50) == 50

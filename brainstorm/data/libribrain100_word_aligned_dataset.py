@@ -687,6 +687,7 @@ class LibriBrain100WordAlignedDataset(Dataset):
             "subject": rec["subject"],
             "session": rec["session"],
             "task": rec["task"],
+            "source_root": str(rec["root"]),
             "sensor_xyzdir": torch.from_numpy(sensor_xyzdir).float(),
             "sensor_types": torch.from_numpy(sensor_types).int(),
             "sensor_mask": torch.from_numpy(sensor_mask).float(),
