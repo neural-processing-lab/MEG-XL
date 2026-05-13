@@ -76,6 +76,7 @@ class LibriBrain100WordAlignedDataset(Dataset):
         clip_range: tuple = (-5, 5),
         allow_incomplete_segments: bool = False,
         include_competition_serialised: bool = True,
+        sherlock1_session11_half_train: bool = False,
     ):
         if split not in self.VALID_SPLITS:
             raise ValueError(f"split must be one of {sorted(self.VALID_SPLITS)}, got {split!r}")
@@ -101,6 +102,7 @@ class LibriBrain100WordAlignedDataset(Dataset):
         self.clip_range = clip_range
         self.allow_incomplete_segments = allow_incomplete_segments
         self.include_competition_serialised = include_competition_serialised
+        self.sherlock1_session11_half_train = sherlock1_session11_half_train
 
         self.sensor_xyzdir_dict: Dict[str, np.ndarray] = {}
         self.sensor_types_dict: Dict[str, int] = {}
@@ -376,6 +378,8 @@ class LibriBrain100WordAlignedDataset(Dataset):
 
         if task.startswith("Sherlock"):
             if task == "Sherlock1" and session == "ses-11":
+                if self.sherlock1_session11_half_train:
+                    return self.split in {"train", "val"}
                 return self.split == "val"
             if task == "Sherlock1" and session == "ses-12":
                 return self.split == "test"
@@ -524,7 +528,7 @@ class LibriBrain100WordAlignedDataset(Dataset):
             rec["sensor_types"] = np.asarray(sensor_types)
             self.file_handles.append(h5_file)
 
-    def _parse_events_file(self, events_path: Path, rec: Dict[str, Any]) -> pd.DataFrame:
+    def _parse_events_file(self, events_path: Path, rec: Dict[str, Any], recording_duration: float) -> pd.DataFrame:
         events_df = pd.read_csv(events_path, sep="\t")
         events_df = events_df[events_df["kind"] == "word"].copy()
         if events_df.empty:
@@ -538,6 +542,18 @@ class LibriBrain100WordAlignedDataset(Dataset):
         events_df = events_df.rename(columns={"timemeg": "onset", "segment": "value"})
         events_df = events_df[events_df["value"].notna()]
         events_df = events_df.sort_values("onset").reset_index(drop=True)
+        if (
+            self.sherlock1_session11_half_train
+            and rec["task"] == "Sherlock1"
+            and rec["session"] == "ses-11"
+        ):
+            midpoint = recording_duration / 2.0
+            if self.split == "train":
+                events_df = events_df[events_df["onset"] < midpoint]
+            elif self.split == "val":
+                events_df = events_df[events_df["onset"] >= midpoint]
+            else:
+                events_df = events_df.iloc[0:0]
         for column in ["sentenceidx", "wordidx"]:
             if column not in events_df.columns:
                 events_df[column] = -1
@@ -600,7 +616,7 @@ class LibriBrain100WordAlignedDataset(Dataset):
                 n_samples = h5_file.attrs["n_samples"]
                 sfreq = h5_file.attrs["sample_freq"]
 
-            events_df = self._parse_events_file(rec["events_path"], rec)
+            events_df = self._parse_events_file(rec["events_path"], rec, n_samples / sfreq)
             groups = self._build_word_groups(events_df, n_samples / sfreq)
             self.word_groups.append(groups)
 

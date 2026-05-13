@@ -2017,6 +2017,7 @@ def main(cfg: DictConfig):
             target_sfreq=cfg.data.target_sfreq,
             max_channel_dim=max_channel_dim,
             include_competition_serialised=cfg.data.get('include_competition_serialised', True),
+            sherlock1_session11_half_train=cfg.data.get('sherlock1_session11_half_train', False),
         )
 
         train_dataset_full = DatasetClass(

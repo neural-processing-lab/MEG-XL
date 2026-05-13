@@ -91,11 +91,12 @@ def _write_recording(
     pd.DataFrame(event_rows).to_csv(events_dir / events_name, sep="\t", index=False)
 
 
-def _dataset(root, split, tasks=None):
+def _dataset(root, split, tasks=None, subjects=None, **kwargs):
     return LibriBrain100WordAlignedDataset(
         data_root=root,
         split=split,
         tasks=tasks,
+        subjects=subjects,
         cache_dir=str(Path(root[0] if isinstance(root, list) else root) / "cache"),
         l_freq=0.1,
         h_freq=125.0,
@@ -103,6 +104,7 @@ def _dataset(root, split, tasks=None):
         words_per_segment=1,
         subsegment_duration=0.1,
         window_onset_offset=0.0,
+        **kwargs,
     )
 
 
@@ -167,6 +169,46 @@ def test_libribrain100_word_metadata_survives_sample_and_collate(tmp_path):
         "word_label": 7,
         "subject_idx": -1,
     }]
+
+
+def test_sherlock1_session11_half_train_split_for_multisub_config(tmp_path):
+    root = tmp_path / "LibriBrain2_hf"
+    _write_sensor_json(root)
+    _write_recording(
+        root,
+        "Sherlock1",
+        "sub-1",
+        "ses-11",
+        [
+            ("segments/", "train_early_1"),
+            ("segments/", "train_early_2"),
+            ("segments/", "train_early_3"),
+            ("segments/", "train_early_4"),
+            ("segments/", "val_late_1"),
+            ("segments/", "val_late_2"),
+            ("segments/", "val_late_3"),
+        ],
+    )
+    _write_recording(root, "Sherlock1", "sub-1", "ses-12", [("segments/", "test_word")])
+    _write_recording(root, "Sherlock1", "sub-0", "ses-11", [("segments/", "dropped_subject0")])
+
+    kwargs = {
+        "tasks": ["Sherlock1"],
+        "subjects": ["sub-1"],
+        "sherlock1_session11_half_train": True,
+    }
+    train = _dataset(root, "train", **kwargs)
+    val = _dataset(root, "val", **kwargs)
+    test = _dataset(root, "test", **kwargs)
+
+    assert set(_words(train)) == {
+        "train_early_1",
+        "train_early_2",
+        "train_early_3",
+        "train_early_4",
+    }
+    assert set(_words(val)) == {"val_late_1", "val_late_2", "val_late_3"}
+    assert _words(test) == ["test_word"]
 
 
 def test_libribrain100_subject_keys_are_namespaced_by_root_and_task(tmp_path):
@@ -389,6 +431,13 @@ def test_libribrain100_factory_and_config_smoke():
     assert len(cfg.evaluation.named_retrieval_sets.datafit50) == 50
     assert len(cfg.evaluation.named_retrieval_sets.moses50) == 50
     assert list(cfg.evaluation.named_retrieval_sets.moses50)[:3] == ["am", "are", "bad"]
+
+    multisub_cfg = OmegaConf.load(
+        "configs/eval_criss_cross_word_classification_libribrain100_multisub_train.yaml"
+    )
+    assert list(multisub_cfg.data.subjects) == [f"sub-{idx}" for idx in range(1, 33)]
+    assert list(multisub_cfg.data.tasks) == ["Sherlock1"]
+    assert multisub_cfg.data.sherlock1_session11_half_train is True
 
 
 def test_named_retrieval_set_resolution_handles_curly_apostrophe():
