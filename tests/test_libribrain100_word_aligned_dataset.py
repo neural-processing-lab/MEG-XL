@@ -16,12 +16,16 @@ from brainstorm.data.libribrain100_word_aligned_dataset import (
 )
 from brainstorm.evaluate_criss_cross_word_classification import (
     _build_named_retrieval_sets,
+    RANDOM_NOISE_MODE_MATCHED_PER_SAMPLE_CHANNEL,
     CrissCrossWordEmbeddingExtractor,
+    apply_input_noise,
     build_subject_to_idx,
     create_word_level_collate_fn,
+    evaluate_epoch,
     get_dataset_class,
     make_subject_key,
     save_target_embeddings_npz,
+    save_prediction_embeddings_npz,
     save_val_test_word_counts_npz,
     training_step,
     write_prediction_embeddings_npz,
@@ -329,6 +333,147 @@ def test_training_step_with_subject_film_smoke():
     assert target_embs.shape == (1, 4)
 
 
+def test_random_noise_preserves_per_sample_channel_shape_mean_and_std():
+    meg = torch.arange(2 * 3 * 100, dtype=torch.float32).reshape(2, 3, 100)
+    generator = torch.Generator().manual_seed(123)
+    noised = apply_input_noise(
+        meg,
+        RANDOM_NOISE_MODE_MATCHED_PER_SAMPLE_CHANNEL,
+        generator=generator,
+    )
+
+    assert noised.shape == meg.shape
+    assert torch.allclose(noised.mean(dim=-1), meg.mean(dim=-1), atol=1e-5)
+    assert torch.allclose(
+        noised.std(dim=-1, unbiased=False),
+        meg.std(dim=-1, unbiased=False),
+        atol=1e-4,
+    )
+
+
+def test_evaluate_epoch_with_random_noise_smoke():
+    class DummyCrissCross(torch.nn.Module):
+        latent_dim = 4
+
+        def forward(self, meg, sensor_xyz, sensor_abc, sensor_types, sensor_mask, apply_mask=False):
+            batch_size, n_channels, _ = meg.shape
+            features = meg.mean(dim=-1, keepdim=True).expand(batch_size, n_channels, 10)
+            features = features.unsqueeze(-1).expand(batch_size, n_channels, 10, self.latent_dim)
+            return {"features": features}
+
+    word_mlp = CrissCrossWordEmbeddingExtractor(
+        num_channels=2,
+        latent_dim=4,
+        embed_dim=4,
+        hidden_dim=8,
+        dropout=0.0,
+    )
+    batch = {
+        "meg": torch.randn(1, 2, 24),
+        "word_labels": torch.tensor([0]),
+        "subsegment_info": [{
+            "batch_idx": 0,
+            "subseg_idx": 0,
+            "start_sample": 0,
+            "end_sample": 24,
+            "subject_idx": -1,
+        }],
+        "sensor_xyzdir": torch.zeros(1, 2, 6),
+        "sensor_types": torch.zeros(1, 2, dtype=torch.long),
+        "sensor_mask": torch.ones(1, 2),
+    }
+    criterion = SigLipLoss(
+        norm_kind="xy",
+        temperature=False,
+        bias=False,
+        identical_candidates_threshold=None,
+        reduction="sum",
+    )
+
+    metrics = evaluate_epoch(
+        DummyCrissCross(),
+        word_mlp,
+        [batch],
+        torch.ones(1, 4),
+        criterion,
+        "cpu",
+        retrieval_set_sizes=[1],
+        k=1,
+        k_values=[1],
+        input_noise_mode=RANDOM_NOISE_MODE_MATCHED_PER_SAMPLE_CHANNEL,
+        input_noise_seed=99,
+    )
+
+    assert "top1_accuracy_retrieval1" in metrics
+    assert "loss" in metrics
+
+
+def test_random_noise_prediction_export_npz(tmp_path):
+    class DummyCrissCross(torch.nn.Module):
+        latent_dim = 4
+
+        def forward(self, meg, sensor_xyz, sensor_abc, sensor_types, sensor_mask, apply_mask=False):
+            batch_size, n_channels, _ = meg.shape
+            features = torch.ones(batch_size, n_channels, 10, self.latent_dim, device=meg.device)
+            return {"features": features}
+
+    word_mlp = CrissCrossWordEmbeddingExtractor(
+        num_channels=2,
+        latent_dim=4,
+        embed_dim=4,
+        hidden_dim=8,
+        dropout=0.0,
+    )
+    batch = {
+        "meg": torch.randn(1, 2, 24),
+        "word_labels": torch.tensor([0]),
+        "subsegment_info": [{
+            "batch_idx": 0,
+            "subseg_idx": 0,
+            "start_sample": 0,
+            "end_sample": 24,
+            "subject_idx": -1,
+        }],
+        "word_metadata": [{
+            "task": "Sherlock1",
+            "subject": "sub-1",
+            "session": "ses-12",
+            "target_word": "hello",
+            "wordidx": 0,
+            "sentenceidx": 0,
+            "word_label": 0,
+            "subject_idx": -1,
+        }],
+        "sensor_xyzdir": torch.zeros(1, 2, 6),
+        "sensor_types": torch.zeros(1, 2, dtype=torch.long),
+        "sensor_mask": torch.ones(1, 2),
+    }
+    criterion = SigLipLoss(
+        norm_kind="xy",
+        temperature=False,
+        bias=False,
+        identical_candidates_threshold=None,
+        reduction="sum",
+    )
+
+    save_prediction_embeddings_npz(
+        tmp_path / "best_test_random_noise_predictions.npz",
+        DummyCrissCross(),
+        word_mlp,
+        [batch],
+        torch.ones(1, 4),
+        criterion,
+        "cpu",
+        input_noise_mode=RANDOM_NOISE_MODE_MATCHED_PER_SAMPLE_CHANNEL,
+        input_noise_seed=101,
+    )
+
+    prediction_npz = np.load(tmp_path / "best_test_random_noise_predictions.npz")
+    assert prediction_npz["target_word"].tolist() == ["hello"]
+    assert prediction_npz["subject_idx"].tolist() == [-1]
+    assert prediction_npz["predicted_embeddings"].shape == (1, 4)
+
+
 def test_themoth_and_mocha_timit_splits(tmp_path):
     root = tmp_path / "LibriBrain2_hf"
     _write_sensor_json(root)
@@ -438,6 +583,11 @@ def test_libribrain100_factory_and_config_smoke():
     assert list(multisub_cfg.data.subjects) == [f"sub-{idx}" for idx in range(1, 33)]
     assert list(multisub_cfg.data.tasks) == ["Sherlock1"]
     assert multisub_cfg.data.sherlock1_session11_half_train is True
+    assert multisub_cfg.evaluation.random_noise_test.enabled is True
+    assert (
+        multisub_cfg.evaluation.random_noise_test.mode
+        == RANDOM_NOISE_MODE_MATCHED_PER_SAMPLE_CHANNEL
+    )
 
 
 def test_named_retrieval_set_resolution_handles_curly_apostrophe():

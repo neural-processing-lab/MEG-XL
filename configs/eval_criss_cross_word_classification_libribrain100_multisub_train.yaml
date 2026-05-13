@@ -42,6 +42,11 @@ data:
     - "Sherlock1"
   sherlock1_session11_half_train: true
 
+evaluation:
+  random_noise_test:
+    enabled: true
+    mode: "matched_gaussian_per_sample_channel"
+
 logging:
   experiment_name: "criss-cross-word-classification-libribrain100-multisub-train-50Hz"
   save_dir: "./logs/word_classification_libribrain100_multisub_train"

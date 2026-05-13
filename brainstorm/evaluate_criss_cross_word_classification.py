@@ -1260,13 +1260,62 @@ def compute_embedding_metrics(
 # Training and Evaluation
 # ============================================================================
 
+RANDOM_NOISE_MODE_MATCHED_PER_SAMPLE_CHANNEL = "matched_gaussian_per_sample_channel"
+
+
+def _make_noise_generator(device: str, seed: Optional[int]) -> Optional[torch.Generator]:
+    if seed is None:
+        return None
+    torch_device = torch.device(device)
+    try:
+        generator = torch.Generator(device=torch_device)
+    except (TypeError, RuntimeError):
+        generator = torch.Generator()
+    generator.manual_seed(int(seed))
+    return generator
+
+
+def _random_noise_seed(base_seed: int, epoch: int) -> int:
+    return int(base_seed) + 1_000_003 * int(epoch)
+
+
+def apply_input_noise(
+    meg: torch.Tensor,
+    input_noise_mode: Optional[str] = None,
+    generator: Optional[torch.Generator] = None,
+) -> torch.Tensor:
+    if input_noise_mode is None:
+        return meg
+
+    if input_noise_mode != RANDOM_NOISE_MODE_MATCHED_PER_SAMPLE_CHANNEL:
+        raise ValueError(
+            f"Unknown input_noise_mode={input_noise_mode!r}. "
+            f"Supported modes: {RANDOM_NOISE_MODE_MATCHED_PER_SAMPLE_CHANNEL!r}"
+        )
+
+    mean = meg.mean(dim=-1, keepdim=True)
+    std = meg.std(dim=-1, keepdim=True, unbiased=False)
+    noise = torch.randn(
+        meg.shape,
+        dtype=meg.dtype,
+        device=meg.device,
+        generator=generator,
+    )
+    noise = noise - noise.mean(dim=-1, keepdim=True)
+    noise_std = noise.std(dim=-1, keepdim=True, unbiased=False).clamp_min(1e-6)
+    noise = noise / noise_std
+    return mean + std * noise
+
+
 def training_step(
     batch: Dict[str, Any],
     criss_cross_model: CrissCrossTransformerModule,
     word_mlp: CrissCrossWordEmbeddingExtractor,
     vocab_embeddings: torch.Tensor,
     criterion: SigLipLoss,
-    device: str
+    device: str,
+    input_noise_mode: Optional[str] = None,
+    input_noise_generator: Optional[torch.Generator] = None,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     """
     Training step handling 10 words per 30s sample.
@@ -1278,6 +1327,8 @@ def training_step(
         vocab_embeddings: [vocab_size, 1024] T5 embeddings
         criterion: SigLIP loss function
         device: Device to run on
+        input_noise_mode: Optional mode for replacing MEG with random noise
+        input_noise_generator: Optional generator for deterministic random noise
 
     Returns:
         loss: Scalar loss value
@@ -1285,6 +1336,7 @@ def training_step(
         target_embeddings: [B*10, 1024] target embeddings
     """
     meg = batch['meg'].to(device)  # [B, C, 7500]
+    meg = apply_input_noise(meg, input_noise_mode, input_noise_generator)
     word_labels = batch['word_labels'].to(device)  # [B*10]
     subsegment_info = batch['subsegment_info']
     sensor_xyzdir = batch['sensor_xyzdir'].to(device)
@@ -1349,6 +1401,8 @@ def evaluate_epoch(
     k: int = 10,
     k_values: Optional[List[int]] = None,
     named_retrieval_sets: Optional[Dict[str, List[int]]] = None,
+    input_noise_mode: Optional[str] = None,
+    input_noise_seed: Optional[int] = None,
 ) -> Dict[str, float]:
     """
     Evaluate on validation or test set.
@@ -1368,6 +1422,8 @@ def evaluate_epoch(
         k: K value for top-k accuracy when k_values is not provided
         k_values: Optional list of K values to compute simultaneously
         named_retrieval_sets: Optional named vocab-index retrieval sets
+        input_noise_mode: Optional mode for replacing MEG with random noise
+        input_noise_seed: Optional deterministic seed for random noise
 
     Returns:
         metrics: Dictionary of evaluation metrics
@@ -1381,6 +1437,7 @@ def evaluate_epoch(
     all_pred_embeddings = []
     all_target_embeddings = []
     all_labels = []
+    noise_generator = _make_noise_generator(device, input_noise_seed)
 
     with torch.no_grad():
         for batch in tqdm(dataloader, desc="Evaluating"):
@@ -1390,7 +1447,9 @@ def evaluate_epoch(
 
             loss, pred_embs, target_embs = training_step(
                 batch, criss_cross_model, word_mlp,
-                vocab_embeddings, criterion, device
+                vocab_embeddings, criterion, device,
+                input_noise_mode=input_noise_mode,
+                input_noise_generator=noise_generator,
             )
 
             all_losses.append(loss.item())
@@ -1559,12 +1618,15 @@ def save_prediction_embeddings_npz(
     vocab_embeddings: torch.Tensor,
     criterion: SigLipLoss,
     device: str,
+    input_noise_mode: Optional[str] = None,
+    input_noise_seed: Optional[int] = None,
 ) -> None:
     criss_cross_model.eval()
     word_mlp.eval()
 
     embeddings = []
     metadata_rows = []
+    noise_generator = _make_noise_generator(device, input_noise_seed)
 
     with torch.no_grad():
         for batch in tqdm(dataloader, desc=f"Exporting {output_path.name}"):
@@ -1572,7 +1634,9 @@ def save_prediction_embeddings_npz(
                 continue
             _loss, pred_embs, _target_embs = training_step(
                 batch, criss_cross_model, word_mlp,
-                vocab_embeddings, criterion, device
+                vocab_embeddings, criterion, device,
+                input_noise_mode=input_noise_mode,
+                input_noise_generator=noise_generator,
             )
             embeddings.append(pred_embs.detach().cpu())
             metadata_rows.extend(batch.get('word_metadata', []))
@@ -1893,6 +1957,40 @@ def train_and_evaluate(
                 criss_cross_model, word_mlp, test_loader,
                 vocab_embeddings, criterion, device
             )
+
+            random_noise_cfg = cfg.evaluation.get('random_noise_test', {})
+            if random_noise_cfg and random_noise_cfg.get('enabled', False):
+                random_noise_mode = random_noise_cfg.get(
+                    'mode',
+                    RANDOM_NOISE_MODE_MATCHED_PER_SAMPLE_CHANNEL,
+                )
+                random_noise_seed = _random_noise_seed(cfg.seed, best_val_epoch)
+                random_noise_test_metrics = evaluate_epoch(
+                    criss_cross_model, word_mlp, test_loader,
+                    vocab_embeddings, criterion, device,
+                    retrieval_set_sizes=cfg.evaluation.retrieval_set_sizes,
+                    k=cfg.evaluation.k,
+                    k_values=eval_k_values,
+                    named_retrieval_sets=named_retrieval_sets,
+                    input_noise_mode=random_noise_mode,
+                    input_noise_seed=random_noise_seed,
+                )
+                save_prediction_embeddings_npz(
+                    save_dir / "best_test_random_noise_predictions.npz",
+                    criss_cross_model, word_mlp, test_loader,
+                    vocab_embeddings, criterion, device,
+                    input_noise_mode=random_noise_mode,
+                    input_noise_seed=random_noise_seed,
+                )
+                wandb.log({
+                    'epoch': epoch + 1,
+                    'test_random_noise_at_best_val/seed': random_noise_seed,
+                    **{
+                        f'test_random_noise_at_best_val/{metric_k}': v
+                        for metric_k, v in random_noise_test_metrics.items()
+                    },
+                })
+
             test_primary_acc = test_metrics.get(f'top{primary_k}_accuracy_retrieval{primary_retrieval_size}', 0)
             logger.info(f"  Saved best model (val balanced: {best_val_top10_acc:.4f}, test top-{primary_k}@{primary_retrieval_size}: {test_primary_acc:.4f})")
         else:
