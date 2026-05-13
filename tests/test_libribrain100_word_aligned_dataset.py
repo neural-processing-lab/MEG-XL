@@ -16,6 +16,7 @@ from brainstorm.data.libribrain100_word_aligned_dataset import (
 )
 from brainstorm.evaluate_criss_cross_word_classification import (
     _build_named_retrieval_sets,
+    _primary_metric_key,
     RANDOM_NOISE_MODE_MATCHED_PER_SAMPLE_CHANNEL,
     CrissCrossWordEmbeddingExtractor,
     apply_input_noise,
@@ -26,6 +27,7 @@ from brainstorm.evaluate_criss_cross_word_classification import (
     make_subject_key,
     save_target_embeddings_npz,
     save_prediction_embeddings_npz,
+    save_subject_embeddings_npz,
     save_val_test_word_counts_npz,
     training_step,
     write_prediction_embeddings_npz,
@@ -474,6 +476,32 @@ def test_random_noise_prediction_export_npz(tmp_path):
     assert prediction_npz["predicted_embeddings"].shape == (1, 4)
 
 
+def test_subject_embedding_npz_writer(tmp_path):
+    word_mlp = CrissCrossWordEmbeddingExtractor(
+        num_channels=2,
+        latent_dim=4,
+        embed_dim=4,
+        hidden_dim=8,
+        dropout=0.0,
+        use_subject_film=True,
+        num_subjects=2,
+        subject_embedding_dim=3,
+    )
+    subject_to_idx = {"root:task:sub-2": 1, "root:task:sub-1": 0}
+
+    save_subject_embeddings_npz(
+        tmp_path / "best_subject_embeddings.npz",
+        word_mlp,
+        subject_to_idx,
+    )
+
+    subject_npz = np.load(tmp_path / "best_subject_embeddings.npz")
+    assert subject_npz["subject_keys"].tolist() == ["root:task:sub-1", "root:task:sub-2"]
+    assert subject_npz["subject_indices"].tolist() == [0, 1]
+    assert subject_npz["subject_embeddings"].shape == (2, 3)
+    assert subject_npz["mean_subject_embedding"].shape == (3,)
+
+
 def test_themoth_and_mocha_timit_splits(tmp_path):
     root = tmp_path / "LibriBrain2_hf"
     _write_sensor_json(root)
@@ -583,6 +611,8 @@ def test_libribrain100_factory_and_config_smoke():
     assert list(multisub_cfg.data.subjects) == [f"sub-{idx}" for idx in range(1, 33)]
     assert list(multisub_cfg.data.tasks) == ["Sherlock1"]
     assert multisub_cfg.data.sherlock1_session11_half_train is True
+    assert multisub_cfg.evaluation.primary_metric == "balanced_top10_accuracy_datafit50"
+    assert _primary_metric_key(multisub_cfg.evaluation) == "balanced_top10_accuracy_datafit50"
     assert multisub_cfg.evaluation.random_noise_test.enabled is True
     assert (
         multisub_cfg.evaluation.random_noise_test.mode

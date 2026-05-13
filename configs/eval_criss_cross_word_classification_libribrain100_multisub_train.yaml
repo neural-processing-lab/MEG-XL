@@ -43,6 +43,7 @@ data:
   sherlock1_session11_half_train: true
 
 evaluation:
+  primary_metric: "balanced_top10_accuracy_datafit50"
   random_noise_test:
     enabled: true
     mode: "matched_gaussian_per_sample_channel"

@@ -237,6 +237,16 @@ def _get_eval_k_values(evaluation_cfg: Any) -> List[int]:
     return [int(k) for k in k_values]
 
 
+def _primary_metric_key(evaluation_cfg: Any) -> str:
+    configured_metric = evaluation_cfg.get('primary_metric', None)
+    if configured_metric:
+        return str(configured_metric)
+
+    primary_k = int(evaluation_cfg.get('primary_k', evaluation_cfg.k))
+    primary_retrieval_size = evaluation_cfg.retrieval_set_sizes[-1]
+    return f'balanced_top{primary_k}_accuracy_retrieval{primary_retrieval_size}'
+
+
 # ============================================================================
 # Model Components
 # ============================================================================
@@ -1585,6 +1595,39 @@ def save_val_test_word_counts_npz(save_dir: Path, val_dataset: Any, test_dataset
     logger.info(f"Saved val/test word-count artifact: {output_path}")
 
 
+def save_subject_embeddings_npz(
+    output_path: Path,
+    word_mlp: CrissCrossWordEmbeddingExtractor,
+    subject_to_idx: Optional[Dict[str, int]],
+) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if (
+        subject_to_idx
+        and getattr(word_mlp, "subject_embedding", None) is not None
+        and word_mlp.subject_embedding is not None
+    ):
+        ordered_subjects = sorted(subject_to_idx.items(), key=lambda item: item[1])
+        subject_keys = np.asarray([subject_key for subject_key, _idx in ordered_subjects], dtype=str)
+        subject_indices = np.asarray([idx for _subject_key, idx in ordered_subjects], dtype=np.int64)
+        subject_embeddings = word_mlp.subject_embedding.weight.detach().cpu().numpy().astype(np.float32)
+        mean_subject_embedding = word_mlp.subject_embedding.weight.mean(dim=0).detach().cpu().numpy().astype(np.float32)
+    else:
+        subject_keys = np.asarray([], dtype=str)
+        subject_indices = np.asarray([], dtype=np.int64)
+        subject_embeddings = np.empty((0, 0), dtype=np.float32)
+        mean_subject_embedding = np.empty((0,), dtype=np.float32)
+
+    np.savez(
+        output_path,
+        subject_keys=subject_keys,
+        subject_indices=subject_indices,
+        subject_embeddings=subject_embeddings,
+        mean_subject_embedding=mean_subject_embedding,
+    )
+    logger.info(f"Saved subject embeddings artifact: {output_path}")
+
+
 def write_prediction_embeddings_npz(
     output_path: Path,
     metadata_rows: List[Dict[str, Any]],
@@ -1662,6 +1705,7 @@ def train_and_evaluate(
     val_subset_loaders: Optional[Dict[str, DataLoader]] = None,
     test_subset_loaders: Optional[Dict[str, DataLoader]] = None,
     named_retrieval_sets: Optional[Dict[str, List[int]]] = None,
+    subject_to_idx: Optional[Dict[str, int]] = None,
 ) -> Dict[str, float]:
     """
     Main training and evaluation loop.
@@ -1678,6 +1722,7 @@ def train_and_evaluate(
         val_subset_loaders: Optional validation loaders for per-subset metrics
         test_subset_loaders: Optional test loaders for per-subset metrics
         named_retrieval_sets: Optional named vocab-index retrieval sets
+        subject_to_idx: Optional train-subject mapping for subject embedding artifacts
 
     Returns:
         test_metrics: Final test set metrics
@@ -1760,6 +1805,7 @@ def train_and_evaluate(
         logger.info(f"\nEpoch {epoch + 1}/{cfg.training.num_epochs}")
         eval_k_values = _get_eval_k_values(cfg.evaluation)
         primary_k = int(cfg.evaluation.get('primary_k', cfg.evaluation.k))
+        primary_metric_key = _primary_metric_key(cfg.evaluation)
 
         # Training
         criss_cross_model.train()
@@ -1843,9 +1889,6 @@ def train_and_evaluate(
                 named_retrieval_sets=named_retrieval_sets,
             )
 
-        # Get primary retrieval set size for early stopping (largest in list)
-        primary_retrieval_size = cfg.evaluation.retrieval_set_sizes[-1]
-
         logger.info(f"  Val loss: {val_metrics['loss']:.4f}")
         for eval_k in eval_k_values:
             for ret_size in cfg.evaluation.retrieval_set_sizes:
@@ -1914,9 +1957,8 @@ def train_and_evaluate(
 
         wandb.log(log_dict)
 
-        # Use primary retrieval set's balanced accuracy for early stopping
-        primary_metric_key = f'balanced_top{primary_k}_accuracy_retrieval{primary_retrieval_size}'
         val_primary_acc = val_metrics.get(primary_metric_key, 0)
+        logger.info(f"  Primary validation metric ({primary_metric_key}): {val_primary_acc:.4f}")
 
         # Scheduler step
         scheduler.step(val_primary_acc)
@@ -1957,6 +1999,11 @@ def train_and_evaluate(
                 criss_cross_model, word_mlp, test_loader,
                 vocab_embeddings, criterion, device
             )
+            save_subject_embeddings_npz(
+                save_dir / "best_subject_embeddings.npz",
+                word_mlp,
+                subject_to_idx,
+            )
 
             random_noise_cfg = cfg.evaluation.get('random_noise_test', {})
             if random_noise_cfg and random_noise_cfg.get('enabled', False):
@@ -1991,8 +2038,11 @@ def train_and_evaluate(
                     },
                 })
 
-            test_primary_acc = test_metrics.get(f'top{primary_k}_accuracy_retrieval{primary_retrieval_size}', 0)
-            logger.info(f"  Saved best model (val balanced: {best_val_top10_acc:.4f}, test top-{primary_k}@{primary_retrieval_size}: {test_primary_acc:.4f})")
+            test_primary_acc = test_metrics.get(primary_metric_key, 0)
+            logger.info(
+                f"  Saved best model ({primary_metric_key}: val={best_val_top10_acc:.4f}, "
+                f"test={test_primary_acc:.4f})"
+            )
         else:
             patience_counter += 1
 
@@ -2544,6 +2594,7 @@ def main(cfg: DictConfig):
         val_subset_loaders=val_subset_loaders,
         test_subset_loaders=test_subset_loaders,
         named_retrieval_sets=named_retrieval_sets,
+        subject_to_idx=subject_to_idx,
     )
 
     # 8. Save the test metrics captured during training at the best validation epoch.
